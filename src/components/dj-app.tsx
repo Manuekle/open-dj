@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, AudioLines, Check, ChevronDown, CircleHelp, Clock3, Disc3, Download, FileAudio2,
+import { Activity, AudioLines, Check, CircleHelp, Clock3, Disc3, Download, FileAudio2,
   FolderOpen, Headphones, Library, Menu, Mic2, Music2, Pause, Play, Plus, Radio, Search,
   Settings2, SlidersHorizontal, Sparkles, Trash2, UploadCloud, Volume2, X } from "lucide-react";
 import { DJEngine } from "@/lib/audio-engine";
@@ -50,8 +50,8 @@ export function DJApp(){
   const [settingsOpen,setSettingsOpen]=useState(false);
   const [mobileNav,setMobileNav]=useState(false);
   const [toast,setToast]=useState("");
-  tracksRef.current=tracks;
-  decksRef.current=decks;
+  useEffect(()=>{tracksRef.current=tracks;},[tracks]);
+  useEffect(()=>{decksRef.current=decks;},[decks]);
 
   const notify=useCallback((message:string)=>{
     setToast(message);
@@ -98,7 +98,6 @@ export function DJApp(){
         });
         return changed?next:prev;
       });
-      setRecordSeconds(recordStart=>recordStart);
     },100);
     return ()=>{
       alive=false;window.clearInterval(timer);
@@ -253,7 +252,6 @@ export function DJApp(){
     if(target==="settings"){setSettingsOpen(true);return;}
     document.getElementById(target)?.scrollIntoView({behavior:"smooth",block:"nearest"});
   }
-  const activeTrack=activeDeck==="A"?aTrack:bTrack;
   const activeState=decks[activeDeck];
 
   return <div className="app-shell" onDragOver={e=>{if(e.dataTransfer.types.includes("Files")){e.preventDefault();setDragging(true);}}}
