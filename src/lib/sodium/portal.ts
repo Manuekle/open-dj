@@ -59,6 +59,8 @@ export function SodiumPortalProvider({children, dir}: {children: ReactNode; dir?
   if (!parent && dir) return createElement(Fragment, null, children);
 
   const element = createElement('div', {ref: setContainer, 'data-sodium-portal': role, dir: role === 'dir' ? dir : undefined});
+  // Upstream portal scope holds a callback that reads refs only when invoked, never during render.
+  // eslint-disable-next-line react-hooks/refs
   return createElement(SodiumPortalContext.Provider, {value: scope},
     children,
     role === 'dir' ? (parent!.container ? createPortal(element, parent!.container) : null) : element,
