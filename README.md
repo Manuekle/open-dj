@@ -20,7 +20,7 @@ Open http://localhost:3000. Add your own MP3, WAV, M4A or OGG files. Files stay 
 
 ## Sodium setup
 
-The interface includes a token-based dark design foundation and a `sodium` body class. To install the official [Sodium design.how](https://design.how) registry theme/components and verify the lint, run `npm run setup:sodium` on a network-connected computer. This script follows the provided shadcn/design.how commands. The remote registry was unavailable from the authoring environment, so no claim is made that the official remote theme was successfully installed.
+This repository includes Sodium's official CSS tokens, styles, base stylesheet, portal and skill (sourced from the public [arla6ka/design.how](https://github.com/arla6ka/design.how) repository), with its dark theme enabled on the root element. The interactive DJ hardware and workstation currently use project-specific controls; full per-component Sodium migration and its lint have **not** been completed. On a network-connected computer run `npm run setup:sodium` to install the registry theme, additional design.how skills and the strict Sodium lint. Then follow `.agents/skills/sodium/SKILL.md` for the remaining UI migration.
 
 ## Privacy
 
