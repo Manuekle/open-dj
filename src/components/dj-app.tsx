@@ -123,6 +123,9 @@ export function DJApp() {
         <Hint label="See each track's stems on their own lanes">
           <Link href="/stems" className="inline-flex h-(--control-sm) items-center px-2.5 type-label-sm text-text-2 hover:text-text-1">Stems</Link>
         </Hint>
+        <Hint label="Sing along: lyrics with timing, from Whisper">
+          <Link href="/lyrics" className="inline-flex h-(--control-sm) items-center px-2.5 type-label-sm text-text-2 hover:text-text-1">Karaoke</Link>
+        </Hint>
         <Hint label="Record your voice over stems, with autotune">
           <Link href="/studio" className="inline-flex h-(--control-sm) items-center px-2.5 type-label-sm text-text-2 hover:text-text-1">Studio</Link>
         </Hint>
@@ -168,7 +171,8 @@ export function DJApp() {
           selected={dj.selectedTrackId} activeDeck={dj.activeDeck} importing={dj.importing} className="min-w-0 xl:col-span-2"
           onSelect={dj.setSelectedTrackId} onLoad={dj.loadToDeck} onDelete={id => void projects.removeTrack(id)} onEdit={setEditingId} onAdd={() => dj.browse()} onAddLink={() => setLinkOpen(true)}
           onQueue={id => dj.queue.add([id])} onQueueAll={() => dj.queue.add(filtered.map(t => t.id))} queued={queued}
-          stemsAvailable={dj.stemsAvailable} splitting={dj.splitting} onSplit={id => void dj.splitStems(id)}/>
+          stemsAvailable={dj.stemsAvailable} splitting={dj.splitting} onSplit={id => void dj.splitStems(id)}
+          lyricsAvailable={dj.lyricsAvailable} transcribing={dj.transcribing} onTranscribe={id => void dj.transcribeLyrics(id)}/>
         <Recordings mixes={dj.mixes} recording={dj.recording} recordSeconds={dj.recordSeconds} mixName={dj.mixName} onMixName={dj.setMixName}
           onRecord={dj.toggleRecord} onExport={dj.exportMix} onDelete={id => void projects.removeMix(id)}/>
       </div>

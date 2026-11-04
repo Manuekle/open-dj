@@ -1,5 +1,6 @@
 import type { SmartStyle } from "@/lib/transition-planner";
 import type { Rhythm, Structure } from "@/lib/analysis-types";
+import type { Lyrics } from "@/lib/lyrics";
 export type { Rhythm, Structure };
 export type DeckId = "A" | "B";
 export type EffectName = "off" | "echo" | "reverb" | "filter" | "flanger" | "phaser" | "crush";
@@ -107,6 +108,8 @@ export interface StoredTrack {
   stemEnergy?: number[][];
   /** Demucs separation: one 8-channel FLAC, a stereo pair per stem in STEMS order. */
   stems?: Blob;
+  /** Sung words with their times, from a Whisper transcription (lib/lyrics), for the karaoke page. */
+  lyrics?: Lyrics;
 }
 export interface Track extends StoredTrack { url: string; coverUrl?: string; stemsUrl?: string }
 export interface StoredMix { id: string; title: string; blob: Blob; format: string; duration: number; createdAt: number; }

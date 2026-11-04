@@ -254,7 +254,9 @@ function Editor({ mediaTime, plan, from, to, fromDeck, toDeck, decks, locked, sy
   const swapShown = plan.eq === "bass" || plan.volume === "cut" || swapsBassStem(plan.stems);
   const echoShown = plan.effect === "echo" || plan.effect === "dub";
   const intensity = plan.intensity ?? 1;
-  const missing = [from, to].filter(t => !t.stems);
+  // A set can run a track into itself (a looped one-track queue, a repeat), so the pair may name the same track twice:
+  // list each track to split once.
+  const missing = [from, to].filter((t, i, all) => !t.stems && all.findIndex(o => o.id === t.id) === i);
   const beatMs = from.bpm ? Math.round(60 / from.bpm * echoBeatsOf(plan) / (fromRate || 1) * 1000) : null;
 
   return <div className="flex flex-col gap-4 xl:flex-row">

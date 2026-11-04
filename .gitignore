@@ -7,4 +7,5 @@ out
 *.tsbuildinfo
 npm-debug.log*
 .demucs
+.whisper
 data

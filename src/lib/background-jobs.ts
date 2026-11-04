@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import { analyzeStems } from "@/lib/analyze";
 import { loadTracks, saveTrack } from "@/lib/storage";
 import { toast } from "@/components/sodium/ui/toast";
+import type { Lyrics } from "@/lib/lyrics";
 
 /* Work that must outlive the page that started it. Stem separation and link downloads run here, at module level, not
    inside a component: a Next client navigation keeps this module alive while the page that asked for the job unmounts.
@@ -14,9 +15,9 @@ type StemJobInput = { id: string; title: string; blob: Blob; fileName: string };
 const wait = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 const percent = (p: number) => `${Math.round(Math.min(1, Math.max(0, p)) * 100)}%`;
 
-async function failure(res: Response) {
+async function failure(res: Response, fallback = "Stem separation failed") {
   const body = await res.json().then((b: { error?: string }) => b, () => undefined);
-  return new Error(body?.error ?? "Stem separation failed");
+  return new Error(body?.error ?? fallback);
 }
 
 // ---- running-job registry, readable from React ----
@@ -100,6 +101,78 @@ async function runStemJob({ id, title, blob, fileName }: StemJobInput) {
     doneListeners.forEach(l => l({ trackId: id, blob: stems, stemEnergy }));
   } catch (e) {
     toast.update(toastId, "fail", e instanceof Error ? e.message : "Stem separation failed");
+  }
+}
+
+// ---- lyrics (Whisper) ----
+type LyricsJobInput = { id: string; title: string; blob: Blob; fileName: string; /** The track's stems file: only its vocals are transcribed, which is cleaner. */ stems?: Blob; language?: string };
+const lyricProgress = new Map<string, number>();
+const lyricRunning = new Map<string, Promise<void>>();
+let lyricSnapshot: Record<string, number> = {};
+const lyricListeners = new Set<() => void>();
+const publishLyrics = () => { lyricSnapshot = Object.fromEntries(lyricProgress); lyricListeners.forEach(l => l()); };
+const subscribeLyrics = (l: () => void) => { lyricListeners.add(l); return () => { lyricListeners.delete(l); }; };
+
+/** Progress (0..1) of every transcription running now, by track id. Survives page changes. */
+export function useLyricsProgress(): Record<string, number> {
+  return useSyncExternalStore(subscribeLyrics, () => lyricSnapshot, () => lyricSnapshot);
+}
+
+const lyricsDoneListeners = new Set<(done: { trackId: string; lyrics: Lyrics }) => void>();
+/** Called when a transcription finished and its words are saved with the track. Returns the unsubscribe. */
+export function onLyricsDone(listener: (done: { trackId: string; lyrics: Lyrics }) => void) {
+  lyricsDoneListeners.add(listener);
+  return () => { lyricsDoneListeners.delete(listener); };
+}
+
+export const lyricsToastId = (trackId: string) => `lyrics-${trackId}`;
+
+/** Starts (or joins) the transcription of one track. Resolves when the job is over; failures end in the toast, never throw. */
+export function startLyricsJob(input: LyricsJobInput): Promise<void> {
+  const existing = lyricRunning.get(input.id);
+  if (existing) return existing;
+  const job = runLyricsJob(input).finally(() => { lyricRunning.delete(input.id); lyricProgress.delete(input.id); release(`lyrics-${input.id}`); publishLyrics(); });
+  lyricRunning.set(input.id, job);
+  lyricProgress.set(input.id, 0);
+  hold(`lyrics-${input.id}`);
+  publishLyrics();
+  return job;
+}
+
+async function runLyricsJob({ id, title, blob, fileName, stems, language }: LyricsJobInput) {
+  const toastId = lyricsToastId(id);
+  const label = `Transcribing lyrics for ${title}`;
+  toast.loading(label, { id: toastId, description: "0%" });
+  try {
+    const headers: Record<string, string> = { "x-file-name": encodeURIComponent(stems ? "stems.flac" : fileName), "x-language": language ?? "auto" };
+    if (stems) headers["x-source"] = "vocals";
+    const start = await fetch("/api/lyrics", { method: "POST", body: stems ?? blob, headers });
+    if (!start.ok) throw await failure(start, "Transcription failed");
+    const { job } = await start.json() as { job: string };
+    for (;;) {
+      await wait(1000);
+      const res = await fetch(`/api/lyrics?job=${job}`);
+      if (!res.ok) throw await failure(res, "Transcription failed");
+      const status = await res.json() as { state: string; progress: number; error?: string };
+      if (status.state === "failed") throw new Error(status.error ?? "Transcription failed");
+      lyricProgress.set(id, status.progress);
+      publishLyrics();
+      toast.update(toastId, "loading", label, { description: percent(status.progress) });
+      if (status.state === "done") break;
+    }
+    const file = await fetch(`/api/lyrics?job=${job}&file=1`);
+    if (!file.ok) throw await failure(file, "Transcription failed");
+    const lyrics = await file.json() as Lyrics;
+    if (!lyrics.words.length) { toast.update(toastId, "warn", `No words were heard in ${title}. Try a track with vocals.`); return; }
+    // Deleted while the job ran: saving now would bring the track back from the dead.
+    const stored = (await loadTracks().catch(() => [])).find(t => t.id === id);
+    if (!stored) { toast.dismiss(toastId); return; }
+    let kept = true;
+    try { await saveTrack({ ...stored, lyrics }); } catch { kept = false; }
+    toast.update(toastId, kept ? "success" : "warn", kept ? `Lyrics ready for ${title}.` : `Lyrics ready for ${title}, but there is not enough space to keep them. They apply for this session only.`);
+    lyricsDoneListeners.forEach(l => l({ trackId: id, lyrics }));
+  } catch (e) {
+    toast.update(toastId, "fail", e instanceof Error ? e.message : "Transcription failed");
   }
 }
 

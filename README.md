@@ -147,6 +147,14 @@ The [Studio page](#pages) is a four-track workspace for recording your voice ove
 - **Autotune** corrects a take offline to a key and scale (chromatic, major, minor or minor pentatonic) with a retune speed and an amount (`src/lib/autotune.ts`). It tracks pitch with YIN and retunes with pitch-synchronous overlap-add, so the length and the formants stay. The original take is kept, so you can tune again.
 - **Export WAV** renders the mix down.
 
+### Lyrics and karaoke
+
+**Transcribe** in the library's Lyrics column writes a track's lyrics with a start and an end for every word, using [whisper.cpp](https://github.com/ggml-org/whisper.cpp) on the machine serving the app (`src/app/api/lyrics/route.ts`). The words stay with the track; the lines are worked out when they are shown (`src/lib/lyrics.ts`). When the track has stems, only its **vocals** stem is transcribed: no drums to mistake for words, and tighter times.
+
+The [Karaoke page](#pages) plays the track with its words lighting up as they are sung: the line now sung is large, the words already sung are dark and the current word is marked. Click a line to jump to it. With stems, **Vocals** turns the singer off and leaves the instrumental. **Earlier** and **Later** move every time by 0.1 s when Whisper ran a little off, and **Download LRC** saves the lyrics as an enhanced LRC file (a tag per line and per word) that karaoke and music players read.
+
+Language is detected by default; pick one in the Karaoke page before transcribing when detection guesses wrong on a short or noisy track. Whisper does not know the real lyrics, it writes what it hears, so check sung or mumbled passages. Run `npm run setup:whisper` once (it needs [Homebrew](https://brew.sh) on a Mac, or `whisper-cli` on your `PATH`, and ffmpeg). The model is `small` (488 MB) by default; `WHISPER_MODEL_NAME=large-v3-turbo npm run setup:whisper` fetches a better one.
+
 ### Sampler and drum machine
 
 On the main page, below the decks, a sampler and 16-step drum machine feed the same master, so a recording takes them too. Play a built-in tone or a dropped-in sample from the on-screen piano, the computer keyboard or a MIDI keyboard, shape it with an effects chain, and play back Standard MIDI Files (`src/components/studio.tsx`, `src/lib/sampler.ts`, `src/lib/midi.ts`).
@@ -183,6 +191,7 @@ The Docker image includes ffmpeg but **not yt-dlp**, so this feature needs yt-dl
 |---|---|
 | `/` | The DJ workstation: library, two decks, mixer, transition editor, AutoMix, set timeline, sampler and drum machine. |
 | `/stems` | Every stem of a track on its own lane, with mute, solo and level. |
+| `/lyrics` | Karaoke: the lyrics of a track with the timing of every word, an instrumental mode when the track has stems, LRC export. |
 | `/studio` | Four-track studio: record your voice over stems of your library, autotune it, export the mix. |
 | `/play` | The rhythm game. |
 | `/diagnostics` | An audio self-test (automation, pitch, clock and drift checks) to run in each browser you care about and compare. |
@@ -206,7 +215,9 @@ Without Docker, the routes also read these (all optional):
 | `DEMUCS_BIN` | `.demucs/bin/demucs` | Stem separation. |
 | `DEMUCS_MODEL` | `htdemucs` | Stem separation. |
 | `DEMUCS_DEVICE` | unset (Demucs picks) | `cpu`, `mps` or `cuda`. |
-| `FFMPEG_BIN` | `ffmpeg` | Stems and link import. |
+| `FFMPEG_BIN` | `ffmpeg` | Stems, lyrics and link import. |
+| `WHISPER_BIN` | `whisper-cli` | Lyrics. |
+| `WHISPER_MODEL` | `.whisper/ggml-small.bin` | Lyrics: path of the Whisper model. |
 | `YTDLP_BIN` | `yt-dlp` | Link import. |
 
 ### Faster AI on a Mac
@@ -234,7 +245,7 @@ ollama pull qwen2.5:7b
 npm run dev
 ```
 
-Open http://localhost:3000. Stems and AI are optional: without Demucs the Split buttons stay disabled, and without Ollama the AI plan button does.
+Open http://localhost:3000. Stems, lyrics and AI are optional: without Demucs the Split buttons stay disabled, without Whisper (`npm run setup:whisper`) the Transcribe buttons do, and without Ollama the AI plan button does.
 
 ## Development
 
@@ -258,6 +269,7 @@ CI (`.github/workflows/ci.yml`) runs typecheck, lint and build on Node 22 for ev
 | `src/app/api/mix` | The AI planner, on Ollama. |
 | `src/app/api/backup` | The disk backup of projects, tracks and recordings. |
 | `src/app/api/import-url` | Audio import from a link with yt-dlp and ffmpeg. |
+| `src/app/api/lyrics` | Word-timed lyrics with whisper.cpp. |
 | `src/hooks/use-dj.ts` | All audio and session state: decks, mixer, transitions, stems, AI plans, AutoMix host. |
 | `src/hooks/use-projects.ts` | Projects, autosave and the disk backup sync. |
 | `src/lib/audio-engine.ts`, `deck-graph.ts` | The Web Audio graph: per-deck stems, trim, EQ, filters, effects, crossfader, recorder. |
@@ -265,11 +277,13 @@ CI (`.github/workflows/ci.yml`) runs typecheck, lint and build on Node 22 for ev
 | `src/lib/transition.ts`, `transition-options.ts` | Transition curves, structure heuristics, the rule-based plan and the option names. |
 | `src/lib/transition-planner.ts` | Smart AutoMix's planner: candidates, scoring, confidence, strategy choice. |
 | `src/lib/automix.ts`, `queue.ts`, `planner.ts` | The Auto DJ state machine, the play queue and queue-level planning (Smart ordering, skips). |
+| `src/lib/lyrics.ts` | Whisper output into timed words and lines, the line under the playhead, LRC export. |
 | `src/lib/autotune.ts`, `studio.ts`, `sampler.ts`, `midi.ts` | Studio: pitch correction, timeline helpers, sampler and MIDI. |
 | `src/lib/rhythm-game` | Chart generation, judging and the canvas playfield. |
 | `src/lib/procedural` | Procedural sound effects for the studio (see credits). |
 | `src/components` | The interface, built on the Sodium design system. |
 | `scripts/setup-demucs.sh` | Demucs install for running without Docker. |
+| `scripts/setup-whisper.sh` | whisper.cpp and Whisper model install for lyrics. |
 | `docs/superpowers/specs` | Design notes for larger features. |
 
 ## Troubleshooting
@@ -277,6 +291,9 @@ CI (`.github/workflows/ci.yml`) runs typecheck, lint and build on Node 22 for ev
 - **The AI plan button stays off.** Ollama is not reachable or the model is not pulled. With Docker, `docker compose logs model` shows the download; without Docker, run `ollama serve` and `ollama pull qwen2.5:7b`. Hovering the button says which.
 - **An AI plan times out.** The model is too large for the memory or CPU Docker has. Use `OLLAMA_MODEL=qwen2.5:3b`, give Docker more memory, or use Ollama on the host as described under [Faster AI on a Mac](#faster-ai-on-a-mac).
 - **The Split buttons stay off.** Demucs is not installed: run `npm run setup:stems`, or use Docker, which includes it.
+- **The Transcribe buttons stay off.** whisper.cpp or its model is missing: run `npm run setup:whisper`. The Docker image does not ship whisper.cpp (like yt-dlp), so lyrics need the app running without Docker, or whisper.cpp added to the image.
+- **The lyrics come out in the wrong language, or as nonsense.** Pick the language on the Karaoke page before transcribing instead of detecting it, split the track into stems first (the vocals stem is cleaner), or try a larger model.
+- **The words light up a little early or late.** Use Earlier and Later on the Karaoke page.
 - **From link says `yt-dlp is not installed`.** Install yt-dlp on the machine running the app (see [Import from a link](#import-from-a-link)); the Docker image does not ship it.
 - **Port 3000 is in use.** Set `PORT=3001` in `.env` (or run `PORT=3001 docker compose up -d`).
 - **Stems play as plain stereo in Safari or Firefox.** Multichannel stem playback is verified in Chromium browsers (Chrome, Edge, Arc, Brave). Open `/diagnostics` in each browser to compare.
@@ -290,10 +307,10 @@ The logo (`src/app/icon.svg`) is four mirrored ellipses in an orange gradient on
 
 ## Privacy
 
-No accounts, no analytics, no cloud services. Audio, analysis and recordings stay in the browser and in the `data` folder on the machine running the app. Stem separation runs there in a temporary folder that is deleted once the stems come back, and AI transitions run on the local Ollama model. The app only listens on localhost. The one outbound request is the one you ask for: **From link** contacts the site you paste.
+No accounts, no analytics, no cloud services. Audio, analysis and recordings stay in the browser and in the `data` folder on the machine running the app. Stem separation and lyrics transcription run there in a temporary folder that is deleted once the result comes back, and AI transitions run on the local Ollama model. The app only listens on localhost. The one outbound request is the one you ask for: **From link** contacts the site you paste.
 
 ## License and credits
 
 MIT, see [LICENSE](LICENSE). The hardware-like controller appearance is an independent HTML/CSS recreation, not firmware or code from a hardware manufacturer.
 
-Built on [Next.js](https://nextjs.org), [React](https://react.dev), [GSAP](https://gsap.com), [Demucs](https://github.com/facebookresearch/demucs), [Ollama](https://ollama.com), [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [ffmpeg](https://ffmpeg.org). The studio's sound effects use recipes from [procedural-sounds](https://github.com/m1ckc3s/procedural-sounds); see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+Built on [Next.js](https://nextjs.org), [React](https://react.dev), [GSAP](https://gsap.com), [Demucs](https://github.com/facebookresearch/demucs), [whisper.cpp](https://github.com/ggml-org/whisper.cpp), [Ollama](https://ollama.com), [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [ffmpeg](https://ffmpeg.org). The studio's sound effects use recipes from [procedural-sounds](https://github.com/m1ckc3s/procedural-sounds); see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

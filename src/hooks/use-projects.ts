@@ -132,7 +132,7 @@ export function useProjects(dj: DJ) {
     if (!next) return;
     // The tracks count too: new stems, a cover or edited tags have to reach the backup though the session is unchanged.
     const parts = djRef.current.tracks.filter(t => next.trackIds.includes(t.id))
-      .map(t => [t.id, !!t.stems, !!t.cover, t.title, t.artist, t.album, t.analysis, t.rhythm?.version, t.structure?.version, !!t.stemEnergy]);
+      .map(t => [t.id, !!t.stems, !!t.cover, t.title, t.artist, t.album, t.analysis, t.rhythm?.version, t.structure?.version, !!t.stemEnergy, t.lyrics?.words.length]);
     // Position advances continuously while a deck plays. Keep the exact position in the project when a real save
     // happens, but ignore it for change detection until playback pauses. Otherwise the playhead schedules a project
     // write every second for the entire track.

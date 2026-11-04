@@ -19,7 +19,7 @@ import { DEFAULT_SMART_STYLE, planTransition, scorePlan, styleKey, styleOptions,
 import { clearTracks, loadMixes, loadTracks, removeMix, removeTrack, saveMix, saveTrack } from "@/lib/storage";
 import { coverNeedsShrink, readTags, shrinkCover } from "@/lib/tags";
 import { toast } from "@/components/sodium/ui/toast";
-import { downloadFromLink, onDownloaded, onStemsDone, startStemJob, stemToastId, takePendingImports, useStemProgress } from "@/lib/background-jobs";
+import { downloadFromLink, onDownloaded, onLyricsDone, onStemsDone, startLyricsJob, startStemJob, stemToastId, takePendingImports, useLyricsProgress, useStemProgress } from "@/lib/background-jobs";
 import { makeDeck, type DeckId, type DeckState, type EffectName, type Session, type StoredMix, type StoredTrack, type Track, type TransitionPlan, type TransitionState } from "@/lib/types";
 
 const DECK_IDS = ["A", "B"] as const;
@@ -132,6 +132,8 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
   const [transition, setTransition] = useState<TransitionState | null>(null);
   /** Whether the server can run Demucs (null until asked), and each separation under way, 0..1 by track id. */
   const [stemsAvailable, setStemsAvailable] = useState<boolean | null>(null);
+  /** Whether /api/lyrics has whisper.cpp and a model (null until asked). */
+  const [lyricsAvailable, setLyricsAvailable] = useState<boolean | null>(null);
   /** Whether /api/mix has a local model through Ollama, and the pair it is planning now ("from>to"). */
   const [aiAvailable, setAiAvailable] = useState<boolean | null>(null);
   const [planning, setPlanning] = useState<string | null>(null);
@@ -285,6 +287,8 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
     loadMixes().then(items => { if (alive) setMixes(items.sort((a, b) => b.createdAt - a.createdAt)); }).catch(() => {});
     fetch("/api/stems").then(res => res.ok ? res.json() as Promise<{ available: boolean }> : { available: false })
       .then(res => { if (alive) setStemsAvailable(res.available); }).catch(() => { if (alive) setStemsAvailable(false); });
+    fetch("/api/lyrics").then(res => res.ok ? res.json() as Promise<{ available: boolean }> : { available: false })
+      .then(res => { if (alive) setLyricsAvailable(res.available); }).catch(() => { if (alive) setLyricsAvailable(false); });
     fetch("/api/mix").then(res => res.ok ? res.json() as Promise<{ available: boolean }> : { available: false })
       .then(res => { if (alive) setAiAvailable(res.available); }).catch(() => { if (alive) setAiAvailable(false); });
     const timer = window.setInterval(() => {
@@ -761,6 +765,17 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
     });
     if (waiting) toast.update(stemToastId(trackId), "success", `Stems ready for ${current.title}. They play the next time it loads.`);
   }
+  /** Sends a track to /api/lyrics and keeps the timed words with it. The vocals stem is transcribed when the track has stems. */
+  async function transcribeLyrics(trackId: string, language?: string) {
+    const track = tracksRef.current.find(t => t.id === trackId);
+    if (!track) return;
+    await startLyricsJob({ id: track.id, title: track.title, blob: track.blob, fileName: track.fileName, stems: track.stems, language });
+  }
+  const transcribing = useLyricsProgress();
+  useEffect(() => onLyricsDone(d => {
+    tracksRef.current = tracksRef.current.map(t => t.id === d.trackId ? { ...t, lyrics: d.lyrics } : t);
+    setTracks(prev => prev.map(t => t.id === d.trackId ? { ...t, lyrics: d.lyrics } : t));
+  }), []);
   const applyStemsRef = useRef(applyStems);
   useEffect(() => { applyStemsRef.current = applyStems; });
   const splitting = useStemProgress();
@@ -1441,7 +1456,7 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
     tracks, mixes, decks: shownDecks, trackA, trackB, cross, master, activeDeck, recording, recordSeconds, importing, mixName, selectedTrackId, transition, mix: (next: TransitionPlan, now = false) => mix(next, now), cancelMix: () => cancelMix(), preview, plan, live, liveTrack, nextTrack, savePlan, resetPlan, saveAsTemplate, armed, smart, planScore, smartStyle, setSmartStyle, autoMix: autoState.enabled, setAutoMix, auto, queue, matchGain, alignPhase,
     setActiveDeck, setMixName, setSelectedTrackId, level, output, loadSelected, clearPad, loopIn, loopOut, beatLoop, resizeLoop, trim, color, browse, importFiles, importUrl, loadToDeck, togglePlay, cue, nudge, skipBeats, seek, pad,
     toggleLoop, setLoopBeats, setRate, sync, eq, fx, fxAmount, fxBeats, volume, crossfade, setMaster, toggleRecord, silent, makeHeard, setList, ratePlan,
-    stemsAvailable, splitting, stems, toggleStem, splitStems, aiAvailable, planning, aiPlan, ready, snapshot, restore, adoptTracks, adoptMixes,
+    stemsAvailable, splitting, stems, toggleStem, splitStems, lyricsAvailable, transcribing, transcribeLyrics, aiAvailable, planning, aiPlan, ready, snapshot, restore, adoptTracks, adoptMixes,
     deleteTrack, updateTrack, clearLibrary, deleteMix, exportMix, mediaTime, positions,
   };
 }

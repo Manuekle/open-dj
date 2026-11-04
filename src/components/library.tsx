@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { formatDate } from "@/lib/art";
 import { formatTime, type DeckId, type StoredMix, type Track } from "@/lib/types";
@@ -46,12 +47,14 @@ type LibraryProps = {
   className?: string; onSelect: (id: string) => void; onLoad: (id: DeckId, track: Track) => void; onDelete: (id: string) => void; onEdit: (id: string) => void; onAdd: () => void; onAddLink?: () => void;
   /** Stem separation: whether Demucs runs on this machine, progress by track id, and the action that starts one. */
   stemsAvailable: boolean | null; splitting: Record<string, number>; onSplit: (id: string) => void;
+  /** Lyrics for karaoke: whether Whisper runs on this machine, progress by track id, and the action that starts one. */
+  lyricsAvailable?: boolean | null; transcribing?: Record<string, number>; onTranscribe?: (id: string) => void;
   /** The play queue: adds a track to its end, and how many times each track is queued now. Without onQueue the column is not shown. */
   onQueue?: (id: string) => void; onQueueAll?: () => void; queued?: Record<string, number>;
 };
 /* The library, with adding tracks folded into it: its footer says how and holds the picker, so no separate upload region
    stands beside it. Its scroll box takes the rest of the row, so it lines up with the recordings beside it. */
-export function TrackLibrary({ tracks, total, search, loaded, selected, activeDeck, importing, className, onSelect, onLoad, onDelete, onEdit, onAdd, onAddLink, stemsAvailable, splitting, onSplit, onQueue, onQueueAll, queued }: LibraryProps) {
+export function TrackLibrary({ tracks, total, search, loaded, selected, activeDeck, importing, className, onSelect, onLoad, onDelete, onEdit, onAdd, onAddLink, stemsAvailable, splitting, onSplit, lyricsAvailable, transcribing, onTranscribe, onQueue, onQueueAll, queued }: LibraryProps) {
   const deckOf = (id: string) => loaded.A === id ? "Deck 1" : loaded.B === id ? "Deck 2" : null;
   const preview = usePreview(tracks);
   return <Table title="Track library" count={search ? `${tracks.length} of ${total}` : total} maxHeight={440} stickyHeader
@@ -71,7 +74,7 @@ export function TrackLibrary({ tracks, total, search, loaded, selected, activeDe
     </>}>
     <TableHeader><TableRow>
       <TableHead><span className="sr-only">Preview</span></TableHead><TableHead>Title</TableHead><TableHead>Artist</TableHead><TableHead numeric>Bpm</TableHead><TableHead numeric>Length</TableHead>
-      <TableHead>Stems</TableHead>{onQueue && <TableHead>Queue</TableHead>}<TableHead>Load</TableHead><TableHead><span className="sr-only">Edit and remove</span></TableHead>
+      <TableHead>Stems</TableHead>{onTranscribe && <TableHead>Lyrics</TableHead>}{onQueue && <TableHead>Queue</TableHead>}<TableHead>Load</TableHead><TableHead><span className="sr-only">Edit and remove</span></TableHead>
     </TableRow></TableHeader>
     <TableBody>
       {tracks.map(t => <TableRow key={t.id} selected={selected === t.id} onClick={() => onSelect(t.id)} onDoubleClick={() => onLoad(activeDeck, t)}>
@@ -96,6 +99,15 @@ export function TrackLibrary({ tracks, total, search, loaded, selected, activeDe
                 aria-label={`Split ${t.title} into stems`}>Split</Button>
             </Hint>}
         </TableCell>
+        {onTranscribe && <TableCell>
+          {transcribing?.[t.id] !== undefined ? <Status size="sm" status="running">{`Listening ${Math.round(transcribing[t.id] * 100)}%`}</Status>
+            : t.lyrics ? <Link href={`/lyrics?track=${encodeURIComponent(t.id)}`} onClick={e => e.stopPropagation()}
+              className="inline-flex h-(--control-sm) items-center px-2.5 type-label-sm text-text-1 hover:underline" aria-label={`Sing along to ${t.title}`}>Karaoke</Link>
+            : <Hint label={lyricsAvailable === false ? "Needs whisper.cpp on this machine: run npm run setup:whisper" : t.stems ? "Write the lyrics with times, from the vocals stem" : "Write the lyrics with times for karaoke"}>
+              <Button size="sm" variant="ghost" disabled={!lyricsAvailable} onClick={e => { e.stopPropagation(); onTranscribe(t.id); }}
+                aria-label={`Transcribe the lyrics of ${t.title}`}>Transcribe</Button>
+            </Hint>}
+        </TableCell>}
         {onQueue && <TableCell>
           <Button size="sm" variant="ghost" onClick={e => { e.stopPropagation(); onQueue(t.id); }}
             aria-label={`Add ${t.title} to the queue${queued?.[t.id] ? `, queued ${queued[t.id]} ${queued[t.id] === 1 ? "time" : "times"}` : ""}`}>
@@ -119,7 +131,7 @@ export function TrackLibrary({ tracks, total, search, loaded, selected, activeDe
           </div>
         </TableCell>
       </TableRow>)}
-      {!tracks.length && <TableEmpty colSpan={onQueue ? 9 : 8} title={total ? "No tracks match your search" : "Your library is empty"}
+      {!tracks.length && <TableEmpty colSpan={8 + (onQueue ? 1 : 0) + (onTranscribe ? 1 : 0)} title={total ? "No tracks match your search" : "Your library is empty"}
         description={total ? "Clear the search to see every track." : "Add audio files to start a session. They stay in this browser."}
         action={total ? undefined : <Button onClick={onAdd}>Add tracks</Button>}/>}
     </TableBody>

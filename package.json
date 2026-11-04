@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "setup:stems": "bash scripts/setup-demucs.sh",
+    "setup:whisper": "bash scripts/setup-whisper.sh",
     "test": "vitest run"
   },
   "dependencies": {
