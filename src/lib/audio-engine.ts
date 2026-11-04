@@ -1,5 +1,5 @@
 import { ClockMap } from "@/lib/clock";
-import { applyColor, applyEffect, createDeckGraph, type DeckGraph } from "@/lib/deck-graph";
+import { applyColor, applyEffect, applyEffectTime, createDeckGraph, type DeckGraph } from "@/lib/deck-graph";
 import { MixSession, crossGains, type MixSpec } from "@/lib/mix-session";
 import type { DeckId, EffectName } from "@/lib/types";
 
@@ -148,6 +148,8 @@ export class DJEngine {
     this.decks.B.cross.gain.setTargetAtTime(g.B,this.context.currentTime,0.01);
   }
   setEffect(id:DeckId,effect:EffectName,amount:number){applyEffect(this.context,this.decks[id],effect,amount);}
+  /** Times a deck's echo, flanger and phaser to its tempo: `beat` heard seconds per beat, `beats` the effect's division. */
+  setEffectTime(id:DeckId,beat:number|null,beats:number){applyEffectTime(this.context,this.decks[id],beat,beats);}
 
   /** Samples the performance and context clocks together. Call it on every poll; it keeps the map between them smooth. */
   sampleClock(){this.clock.sample(performance.now()/1000,this.context.currentTime);}
@@ -172,12 +174,12 @@ export class DJEngine {
    * AudioParam events against the context clock from `start` (context time) for `duration` seconds. Returns the session
    * so the caller can re-anchor or cancel it; it needs nothing else from the main thread to finish.
    */
-  scheduleMix(opts:{from:DeckId;to:DeckId;plan:MixSpec["plan"];start:number;duration:number;outStart:number;handover:boolean}){
+  scheduleMix(opts:{from:DeckId;to:DeckId;plan:MixSpec["plan"];start:number;duration:number;outStart:number;handover:boolean;beat?:number}){
     this.cancelMix();
     const rest=crossGains(this.crossValue),final=crossGains(opts.to==="B"?1:-1);
     const session=new MixSession(this.context,{
       plan:opts.plan,from:this.decks[opts.from],to:this.decks[opts.to],start:opts.start,duration:opts.duration,outStart:opts.outStart,
-      rest:{from:rest[opts.from],to:rest[opts.to]},final:{from:final[opts.from],to:final[opts.to]},handover:opts.handover,
+      rest:{from:rest[opts.from],to:rest[opts.to]},final:{from:final[opts.from],to:final[opts.to]},handover:opts.handover,beat:opts.beat,
     });
     session.schedule();
     this.mix={session,from:opts.from,to:opts.to};

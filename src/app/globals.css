@@ -105,6 +105,7 @@ html[data-input="pointer"] .sodium [data-slot="slider-thumb"] { outline: none; }
    Sodium is flat by default; this is the project's one deliberate departure, kept to things that move or are on. */
 .glow { filter: drop-shadow(0 0 3px currentColor) drop-shadow(0 0 8px color-mix(in srgb, currentColor 45%, transparent)); }
 .sodium [data-deck] [data-slot="segmented-control"] [data-pressed],
+.sodium [data-deck] [data-slot="segmented-control"] [data-slot="segmented-control-thumb"],
 .sodium [data-deck] [data-slot="segmented-control"] [data-checked] {
   box-shadow: 0 0 14px -2px var(--check-edge), inset 0 0 10px -4px var(--check-edge);
 }
@@ -112,6 +113,15 @@ html[data-input="pointer"] .sodium [data-slot="slider-thumb"] { outline: none; }
 .sodium [data-deck] [data-slot="slider-thumb"] { box-shadow: 0 0 10px -1px var(--check-range); }
 .sodium [data-deck] [data-slot="meter-track"] { box-shadow: 0 0 10px -3px var(--deck); }
 @media (prefers-reduced-motion: reduce) { .glow { filter: none; } }
+
+/* Film grain over the whole page: one fixed, static noise tile (no animation, so no repaint cost) that breaks up the flat
+   Erie Black panels. It sits above everything but takes no pointer events, and stays faint so text and the waveform read the same. */
+body::after {
+  content: ""; position: fixed; inset: 0; z-index: 2147483647; pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n' x='0' y='0' width='100%25' height='100%25'><feTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 1.2 -0.1'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  background-size: 200px 200px;
+  opacity: 0.09;
+}
 
 /* Controller: deck, mixer, deck. The mixer keeps a fixed width and the decks share the rest. */
 @media (min-width: 64rem) { .console-grid { grid-template-columns: minmax(0, 1fr) 18rem minmax(0, 1fr); } }

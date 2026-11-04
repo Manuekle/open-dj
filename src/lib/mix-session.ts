@@ -1,6 +1,6 @@
 import { holdAt, pointCount, rampChain, releaseTo, sampleCurve } from "@/lib/automation";
 import { centsOf, colorCutoffs, ensureRack, type DeckGraph, type SendKind } from "@/lib/deck-graph";
-import { effectAt, effectSend, effectUsesColor, lowAt, vocalsAt, volumeAt } from "@/lib/transition";
+import { echoBeatsOf, effectOf, effectSend, effectUsesColor, lowOf, stemsOf, volumeOf } from "@/lib/transition";
 import type { TransitionPlan } from "@/lib/types";
 
 /* A transition as AudioParam automation.
@@ -23,7 +23,7 @@ const ANCHOR_LEAD = 0.06;
 export const RELEASE = 0.25;
 
 export type MixSpec = {
-  plan: Pick<TransitionPlan, "volume" | "eq" | "effect" | "stems">;
+  plan: Pick<TransitionPlan, "volume" | "eq" | "effect" | "stems"> & Partial<Pick<TransitionPlan, "curve" | "eqAt" | "intensity" | "echoBeats">>;
   from: DeckGraph;
   to: DeckGraph;
   /** Context time of progress 0. */
@@ -35,8 +35,10 @@ export type MixSpec = {
   /** The crossfader gains the decks land on when the mix ends, and the ones a cancelled mix goes back to. */
   final: { from: number; to: number };
   rest: { from: number; to: number };
-  /** Whether the vocals stems hand over. */
+  /** Whether the plan's stem move runs: both decks play stems files. */
   handover: boolean;
+  /** Context seconds per beat of the outgoing track, so a transition's echo repeats on the beat. */
+  beat?: number;
 };
 
 type Lane = {
@@ -80,33 +82,39 @@ export class MixSession {
     const lanes: Lane[] = [];
     const add = (lane: Lane) => lanes.push(lane);
 
-    add({ param: from.mix.volume.gain, value: t => volumeAt(plan.volume, t).out * spec.outStart, rest: 1, fader: "volume", deck: "from" });
-    add({ param: to.mix.volume.gain, value: t => volumeAt(plan.volume, t).in, rest: 1, entry: 0, fader: "volume", deck: "to" });
+    add({ param: from.mix.volume.gain, value: t => volumeOf(plan, t).out * spec.outStart, rest: 1, fader: "volume", deck: "from" });
+    add({ param: to.mix.volume.gain, value: t => volumeOf(plan, t).in, rest: 1, entry: 0, fader: "volume", deck: "to" });
     // The crossfader is taken out of the path for the length of the mix: its gains are held at 1 and the volume lanes
     // carry the blend. Both change on the same sample at the start and at the end, so neither moves the signal.
     add({ param: from.cross.gain, value: () => 1, rest: spec.rest.from, end: spec.final.from, step: true, fader: "cross", deck: "from" });
     add({ param: to.cross.gain, value: () => 1, rest: spec.rest.to, end: spec.final.to, step: true, fader: "cross", deck: "to" });
 
     if (plan.eq !== "none") {
-      add({ param: from.mix.low.gain, value: t => lowAt(plan.eq, t).out, rest: 0 });
-      add({ param: to.mix.low.gain, value: t => lowAt(plan.eq, t).in, rest: 0 });
+      add({ param: from.mix.low.gain, value: t => lowOf(plan, t).out, rest: 0 });
+      add({ param: to.mix.low.gain, value: t => lowOf(plan, t).in, rest: 0 });
     }
     if (effectUsesColor(plan.effect)) {
       for (const [deck, side] of [[from, "outColor"], [to, "inColor"]] as const) {
-        add({ param: deck.mix.lp.detune, value: t => lp(colorCutoffs(effectAt(plan.effect, t)[side]).lp), rest: centsOf(nyquist) });
-        add({ param: deck.mix.hp.detune, value: t => centsOf(colorCutoffs(effectAt(plan.effect, t)[side]).hp), rest: centsOf(colorCutoffs(0).hp) });
+        add({ param: deck.mix.lp.detune, value: t => lp(colorCutoffs(effectOf(plan, t)[side]).lp), rest: centsOf(nyquist) });
+        add({ param: deck.mix.hp.detune, value: t => centsOf(colorCutoffs(effectOf(plan, t)[side]).hp), rest: centsOf(colorCutoffs(0).hp) });
       }
     }
     const send = effectSend(plan.effect);
     this.sendKind = send;
     if (send) {
-      ensureRack(ctx, from, send);
-      add({ param: from.mix.send.gain, value: t => Math.min(0.95, effectAt(plan.effect, t).amount * 0.7), rest: 0 });
-      add({ param: from.mix.dry.gain, value: t => { const e = effectAt(plan.effect, t); return Math.max(0, 1 - e.amount * 0.25 - e.wash); }, rest: 1 });
+      const rack = ensureRack(ctx, from, send);
+      // The echo repeats on the outgoing track's beat, at the plan's division, for the length of the mix.
+      if (rack.delay && spec.beat) rack.delay.delayTime.setValueAtTime(Math.min(1.9, Math.max(0.03, spec.beat * echoBeatsOf(plan))), Math.max(ctx.currentTime, spec.start - 0.05));
+      add({ param: from.mix.send.gain, value: t => Math.min(0.95, effectOf(plan, t).amount * 0.7), rest: 0 });
+      add({ param: from.mix.dry.gain, value: t => { const e = effectOf(plan, t); return Math.max(0, 1 - e.amount * 0.25 - e.wash); }, rest: 1 });
     }
     if (spec.handover) {
-      add({ param: from.mix.vocals.gain, value: t => vocalsAt(plan.stems, t).out, rest: 1 });
-      add({ param: to.mix.vocals.gain, value: t => vocalsAt(plan.stems, t).in, rest: 1 });
+      // One lane per stem and side, only where the move changes that stem.
+      const probe = [0, 0.25, 0.5, 0.75, 1].map(t => stemsOf(plan, t));
+      for (let k = 0; k < 4; k++) {
+        if (probe.some(p => p.out[k] !== 1)) add({ param: from.mix.stems[k].gain, value: t => stemsOf(plan, t).out[k], rest: 1 });
+        if (probe.some(p => p.in[k] !== 1)) add({ param: to.mix.stems[k].gain, value: t => stemsOf(plan, t).in[k], rest: 1 });
+      }
     }
     this.lanes = lanes;
   }

@@ -16,7 +16,7 @@ import { Icon, Next, Pause, Play } from "@/components/sodium/icon";
 import { Countdown } from "./countdown";
 import { MixCurves } from "./mix-curves";
 import { QueueList } from "./queue-list";
-import { AutoMixSettings } from "./settings";
+import { AutoMixSettings, type ServicesView } from "./settings";
 import {
   HARMONY_SHORT, PHASE, confidenceWord, formatGap, pairView, phaseOf, queueRows,
   type AutoControls, type AutoView, type DeckLite, type QueueActions, type ScoreView, type SmartStyle,
@@ -40,6 +40,7 @@ export type AutoMixPanelProps = {
   fallback: string | null;
   style: SmartStyle | null;
   onStyle: ((patch: Partial<SmartStyle>) => void) | null;
+  services: ServicesView;
 };
 
 const deckWord = (id: DeckId | null) => id ? `Deck ${id === "A" ? 1 : 2}` : "Not loaded";
@@ -61,11 +62,16 @@ export const AutoMixPanel = memo(function AutoMixPanel(p: AutoMixPanelProps) {
   }, [p.library, auto.queue.items]);
 
   const phase = phaseOf(auto);
-  const shown = PHASE[phase];
+  // "analyzing" with nothing to analyze is AutoMix waiting at the end of the queue, not working: say that.
+  const waiting = phase === "analyzing" && !auto.nextTrackId && !transition;
+  const shown = waiting ? { status: "idle" as const, label: "Queue ended" } : PHASE[phase];
   const mixing = !!transition;
   const fromDeck = pair.from?.deck ?? null;
   const anyPlaying = decks.A.playing || decks.B.playing;
-  const toggle = (on: boolean) => { if (!on) controls.stop(); else if (anyPlaying) controls.enable(); else controls.start(); };
+  // The switch only says whether AutoMix follows the decks; playing the queue is its own button, so turning AutoMix on
+  // never starts a track by surprise, and starting the set is always one obvious press.
+  const toggle = (on: boolean) => { if (!on) controls.stop(); else controls.enable(); };
+  const canStart = !anyPlaying && !mixing && auto.queue.items.some(i => i.status !== "failed");
   const value = score?.score ?? plan?.score ?? null;
   const detail = auto.error ?? auto.detail;
 
@@ -74,6 +80,9 @@ export const AutoMixPanel = memo(function AutoMixPanel(p: AutoMixPanelProps) {
       <FrameTitle>AutoMix</FrameTitle>
       <FrameStatus><Status size="sm" status={shown.status} live><TextSwap>{shown.label}</TextSwap></Status></FrameStatus>
       <FrameActions>
+        {!anyPlaying && <Hint label={canStart ? "Turn AutoMix on and play the queue from its next track" : "Add tracks to the queue first"}>
+          <Button size="sm" disabled={!canStart} onClick={controls.start}><Icon icon={Play}/>Play queue</Button>
+        </Hint>}
         <Hint label={auto.phase === "paused" ? "Resume AutoMix" : "Pause AutoMix: the decks keep playing, no mix starts"}>
           <Button size="icon-sm" variant="ghost" disabled={!auto.enabled || auto.pausing} aria-pressed={auto.phase === "paused"}
             onClick={auto.phase === "paused" ? controls.resume : controls.pause} aria-label={auto.phase === "paused" ? "Resume AutoMix" : "Pause AutoMix"}>
@@ -157,12 +166,13 @@ export const AutoMixPanel = memo(function AutoMixPanel(p: AutoMixPanelProps) {
     <FrameBody>
       <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <QueueList rows={rows} smart={auto.queue.smart} unqueued={unqueued} locked={mixing || auto.skipPending} actions={queue}/>
-        <AutoMixSettings style={p.style} onStyle={p.onStyle} smart={auto.queue.smart} loop={auto.queue.loop} onSmart={queue.setSmart} onLoop={queue.setLoop}/>
+        <AutoMixSettings style={p.style} onStyle={p.onStyle} smart={auto.queue.smart} loop={auto.queue.loop} onSmart={queue.setSmart} onLoop={queue.setLoop} services={p.services}/>
       </div>
     </FrameBody>
 
     <FrameFooter>
-      <FrameMeta className="whitespace-normal" aria-live="polite"><TextSwap>{detail || (auto.enabled ? "AutoMix follows the queue." : "Turn AutoMix on to play the queue and mix each track at its out point.")}</TextSwap></FrameMeta>
+      <FrameMeta className="whitespace-normal" aria-live="polite"><TextSwap>{detail || (auto.enabled ? (anyPlaying ? "AutoMix follows the queue." : "AutoMix is on: press Play queue, or play a deck, and it mixes each track at its out point.")
+        : "Play queue starts the set. Or turn AutoMix on while you play a deck, and it mixes the queue in at each out point.")}</TextSwap></FrameMeta>
       <Field orientation="horizontal" className="w-auto gap-2">
         <FieldLabel>AutoMix</FieldLabel>
         <Switch checked={auto.enabled} onCheckedChange={toggle}/>

@@ -1,4 +1,5 @@
 import { harmony, planRatio, spanOn, tempoGap, type Harmony } from "@/lib/transition";
+import { EFFECT_OPTIONS, EQ_OPTIONS, STEM_OPTIONS, VOLUME_OPTIONS } from "@/lib/transition-options";
 import type { AutoPhase, AutoSnapshot } from "@/lib/automix";
 import type { StatusValue } from "@/components/sodium/ui/status";
 import type { EnergyFlow, TempoMatching as TempoMatch } from "@/lib/transition-planner";
@@ -63,6 +64,11 @@ export const DURATIONS: { value: string; label: string; bars: number | "auto" }[
 ];
 export const durationValue = (bars: number | "auto") => bars === "auto" ? "auto" : String(bars * 4);
 export const TEMPO: { value: TempoMatch; label: string }[] = [{ value: "off", label: "Off" }, { value: "gentle", label: "Gentle" }, { value: "standard", label: "Standard" }];
+/** The shape overrides the AutoMix settings offer: "auto" leaves each to the planner's strategy. */
+export const AUTO_VOLUME = [{ value: "auto", label: "Auto" }, ...VOLUME_OPTIONS.filter(o => o.value !== "custom")];
+export const AUTO_EQ = [{ value: "auto", label: "Auto" }, ...EQ_OPTIONS];
+export const AUTO_EFFECT = [{ value: "auto", label: "Auto" }, ...EFFECT_OPTIONS];
+export const AUTO_STEMS = [{ value: "auto", label: "Auto" }, ...STEM_OPTIONS];
 export const ENERGY: { value: EnergyFlow; label: string }[] = [{ value: "auto", label: "Auto" }, { value: "maintain", label: "Maintain" }, { value: "build", label: "Build" }, { value: "relax", label: "Relax" }];
 
 export const STRATEGY_LABEL: Record<TransitionStrategy, string> = {
@@ -73,7 +79,11 @@ export const HARMONY_SHORT: Record<Harmony, string> = {
   same: "Same key", adjacent: "Adjacent", relative: "Relative", boost: "Energy boost", clash: "Clash", unknown: "Unknown",
 };
 const EFFECT_LABEL: Record<TransitionPlan["effect"], string | null> = {
-  none: null, lowpass: "low pass", rise: "high pass", echo: "echo out", reverb: "reverb wash", flanger: "flanger", swap: "filter swap",
+  none: null, lowpass: "low pass", rise: "high pass in", hpout: "high pass out", lpin: "low pass in", echo: "echo out", dub: "dub echo",
+  reverb: "reverb wash", flanger: "flanger", swap: "filter swap",
+};
+const STEM_LABEL: Record<NonNullable<TransitionPlan["stems"]>, string | null> = {
+  none: null, vocals: "vocal handover", bass: "bass stem swap", drums: "drums first", acapella: "acapella over", full: "stem blend",
 };
 
 /** A deck as the panel needs it: which track and at what rate. Position is read from the media clock, never from here. */
@@ -111,13 +121,14 @@ export function pairView(plan: TransitionPlan | null, tracks: ReadonlyMap<string
   const fromRate = from?.deck ? decks[from.deck].rate : 1;
   const seconds = plan && fromTrack ? spanOn(fromTrack, plan.bars) / (fromRate || 1) : null;
   const effect = plan ? EFFECT_LABEL[plan.effect] : null;
-  const type = !plan ? null : [plan.strategy ? STRATEGY_LABEL[plan.strategy] : plan.by === "ai" ? "AI plan" : plan.preset === "custom" ? "Edited" : "Auto", effect, plan.eq === "bass" ? "bass swap" : null]
+  const type = !plan ? null : [plan.strategy ? STRATEGY_LABEL[plan.strategy] : plan.by === "ai" ? "AI plan" : plan.preset === "custom" ? "Edited" : "Auto", effect,
+    plan.eq === "bass" ? "bass swap" : plan.eq === "gradual" ? "gradual lows" : null, STEM_LABEL[plan.stems ?? "none"], plan.volume === "custom" ? "custom curve" : null]
     .filter(Boolean).join(" · ");
   return {
     from, to,
     gap: fromTrack && toTrack ? tempoGap({ ...fromTrack, bpm: from?.bpm ?? fromTrack.bpm }, toTrack) : null,
     relation: harmony(fromTrack?.camelot, toTrack?.camelot),
-    seconds, beats: plan ? plan.bars * 4 : null, type, bassSwap: plan?.eq === "bass",
+    seconds, beats: plan ? plan.bars * 4 : null, type, bassSwap: plan?.eq !== undefined && plan.eq !== "none",
   };
 }
 

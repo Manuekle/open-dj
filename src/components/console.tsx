@@ -21,6 +21,8 @@ import { Field, FieldLabel } from "@/components/sodium/ui/field";
 import { Status } from "@/components/sodium/ui/status";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/sodium/ui/tooltip";
 import { Add, Icon, Keyboard, Pause, Play, Subtract } from "@/components/sodium/icon";
+import { ECHO_BEATS, beatsLabel as fxBeatsLabel } from "@/lib/transition-options";
+import { useDeckPosition, type DeckPositions } from "@/hooks/use-deck-position";
 
 const deckName = (id: DeckId) => `Deck ${id === "A" ? 1 : 2}`;
 const first = (v: number | readonly number[]) => Array.isArray(v) ? v[0] : v as number;
@@ -90,7 +92,9 @@ export function Knob({ label, value, min, max, reset = 0, format = String, tone 
 
 /* A turntable platter in Sodium's line language: 1px rules, the deck's data tone for the mark. Drag, the arrow keys or,
    once it has focus, the scroll wheel nudge the track. */
-function Jog({ id, deck, enabled, onNudge }: { id: DeckId; deck: DeckState; enabled: boolean; onNudge: (seconds: number) => void }) {
+function Jog({ id, deck, positions, enabled, onNudge }: { id: DeckId; deck: DeckState; positions: DeckPositions; enabled: boolean; onNudge: (seconds: number) => void }) {
+  // Whole seconds: the readout and the slider values show no finer, so the platter re-renders once a second.
+  const position = useDeckPosition(positions, id, 1);
   const root = useRef<HTMLDivElement>(null);
   const platter = useRef<SVGGElement>(null);
   const live = useRef({ playing: false, rate: 1, angle: 0 });
@@ -124,11 +128,11 @@ function Jog({ id, deck, enabled, onNudge }: { id: DeckId; deck: DeckState; enab
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
-  const remaining = Math.max(0, deck.duration - deck.position);
+  const remaining = Math.max(0, deck.duration - position);
   return <Tooltip>
     <TooltipTrigger render={<div ref={root}/>} role="slider" tabIndex={enabled ? 0 : -1} aria-disabled={!enabled || undefined}
-      aria-label={`${deckName(id)} jog wheel`} aria-valuemin={0} aria-valuemax={Math.round(deck.duration)} aria-valuenow={Math.round(deck.position)}
-      aria-valuetext={enabled ? `${formatTime(deck.position)} of ${formatTime(deck.duration)}` : "No track"}
+      aria-label={`${deckName(id)} jog wheel`} aria-valuemin={0} aria-valuemax={Math.round(deck.duration)} aria-valuenow={Math.round(position)}
+      aria-valuetext={enabled ? `${formatTime(position)} of ${formatTime(deck.duration)}` : "No track"}
       className={cn("aspect-square w-full max-w-md touch-none select-none", enabled ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed opacity-60")} draggable={false}
       onPointerDown={e => {
         if (!enabled || e.button !== 0) return;
@@ -275,7 +279,13 @@ function DeckPanel({ id, deck, track, mirror, dj, className }: { id: DeckId; dec
   return <section data-deck={id} aria-label={`${name} controls`} className={cn("@container flex min-w-0 flex-col", className)}>
     <div className="panel-head">
       <span className="shrink-0">{name}</span>
-      <Status size="sm" status={deck.playing ? "running" : hasTrack ? "paused" : "idle"}><TextSwap>{deck.playing ? "Playing" : hasTrack ? "Cued" : "Empty"}</TextSwap></Status>
+      {dj.silent[id]
+        ? <Hint label={`${dj.silent[id]}. Click to hear this deck.`}>
+            <Button size="sm" variant="ghost" onClick={() => dj.makeHeard(id)} aria-label={`${name} plays but is silent: ${dj.silent[id]}. Make it heard`}>
+              <Status size="sm" status="warn"><TextSwap>Silent</TextSwap></Status>
+            </Button>
+          </Hint>
+        : <Status size="sm" status={deck.playing ? "running" : hasTrack ? "paused" : "idle"}><TextSwap>{deck.playing ? "Playing" : hasTrack ? "Cued" : "Empty"}</TextSwap></Status>}
       {track && <span className="ms-auto min-w-0 truncate type-code-sm text-text-2" title={track.title}>{track.title}</span>}
     </div>
 
@@ -308,7 +318,7 @@ function DeckPanel({ id, deck, track, mirror, dj, className }: { id: DeckId; dec
           <Button size="sm" variant="ghost" disabled={!hasTrack || deck.rate === 1} onClick={() => dj.setRate(id, 1)} aria-label={`Reset ${name.toLowerCase()} tempo`}>Reset</Button>
         </div>
         <div className="flex min-w-0 flex-1 items-center justify-center">
-          <Jog id={id} deck={deck} enabled={hasTrack} onNudge={n => dj.nudge(id, n)}/>
+          <Jog id={id} deck={deck} positions={dj.positions} enabled={hasTrack} onNudge={n => dj.nudge(id, n)}/>
         </div>
       </div>
 
@@ -407,6 +417,11 @@ function BeatFx({ dj }: { dj: DJ }) {
   const ids: DeckId[] = target === "AB" ? ["A", "B"] : [target];
   const fxOn = ids.some(id => dj.decks[id].fx === effect);
   const depth = dj.decks[ids[0]].fxAmount;
+  const beats = dj.decks[ids[0]].fxBeats;
+  // Heard length of the effect's time on the first targeted deck, so the division reads in ms too.
+  const track = ids[0] === "A" ? dj.trackA : dj.trackB;
+  const timeMs = track?.bpm ? Math.round(60 / (track.bpm * (dj.decks[ids[0]].rate || 1)) * beats * 1000) : null;
+  const timed = effect === "echo" || effect === "flanger" || effect === "phaser";
   const apply = (fx: EffectName, targets = ids) => targets.forEach(id => dj.fx(id, fx, depth));
   const effectLabel = EFFECTS.find(e => e.id === effect)?.label ?? "";
   const targetLabel = target === "AB" ? "both decks" : deckName(target).toLowerCase();
@@ -432,6 +447,12 @@ function BeatFx({ dj }: { dj: DJ }) {
         onChange={n => ids.forEach(id => fxOn ? dj.fx(id, effect, n) : dj.fxAmount(id, n))}/>
       <span className="type-label-sm text-text-2" aria-hidden>Depth {pct(depth)}</span>
     </div>
+    {timed && <div className="flex items-center gap-2">
+      <SegmentedControl size="sm" aria-label="Effect time in beats" value={String(beats)} onValueChange={v => ids.forEach(id => dj.fxBeats(id, Number(v)))}>
+        {ECHO_BEATS.map(n => <SegmentedControlItem key={n} value={String(n)}>{fxBeatsLabel(n)}</SegmentedControlItem>)}
+      </SegmentedControl>
+      <span className="type-label-sm text-text-2" aria-hidden>{effect === "echo" ? "beat" : "× 4 beats sweep"}{timeMs ? ` · ${timeMs} ms` : " · no tempo"}</span>
+    </div>}
     <span className="ms-auto type-code-sm text-text-2" aria-live="polite"><TextSwap>{fxOn ? `${effectLabel} on ${targetLabel}` : "Effects off"}</TextSwap></span>
   </section>;
 }

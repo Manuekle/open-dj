@@ -43,8 +43,9 @@ export const QueueList = memo(function QueueList({ rows, smart, unqueued, locked
         <Hint label={unqueued.length ? `Add ${unqueued.length} library ${unqueued.length === 1 ? "track" : "tracks"} to the queue` : "Every library track is queued"}>
           <Button size="icon-sm" variant="ghost" disabled={!unqueued.length} onClick={() => actions.add(unqueued, "end")} aria-label="Queue the library"><Icon icon={Add}/></Button>
         </Hint>
-        <Hint label="Clear the queue, keeping the track that plays">
-          <Button size="icon-sm" variant="ghost" disabled={!movable.length && !failed} onClick={actions.clear} aria-label="Clear the queue"><Icon icon={TrashCan}/></Button>
+        <Hint label="Empty the queue, the track that plays included">
+          <Button size="icon-sm" variant="ghost" disabled={!rows.length} aria-label="Empty the queue"
+            onClick={() => { actions.clear(); const now = rows.find(r => r.state === "current"); if (now) actions.remove(now.item.uid); }}><Icon icon={TrashCan}/></Button>
         </Hint>
       </div>
     </div>

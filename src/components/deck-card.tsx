@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { gsap, useGSAP } from "@/lib/gsap";
 import { formatTime, type DeckId, type DeckState, type Track } from "@/lib/types";
 import { cn } from "@/lib/sodium/utils";
@@ -12,26 +12,31 @@ import { Slider } from "@/components/sodium/ui/slider";
 import { Cover } from "@/components/track-editor";
 import { Icon, Next, Pause, Play, Previous, Repeat, Upload } from "@/components/sodium/icon";
 import { Hint } from "@/components/hint";
+import { Pick } from "@/components/pick";
 import { IconSwap, TextSwap } from "@/components/motion";
 import { DECK_KEYS } from "@/hooks/use-shortcuts";
+import { useDeckPosition, type DeckPositions } from "@/hooks/use-deck-position";
 
 // Rounded so server and client render identical markup.
 const PLACEHOLDER = Array.from({ length: 160 }, (_, i) => Math.round((0.08 + 0.16 * Math.abs(Math.sin(i * 0.57) * Math.cos(i * 0.13))) * 1000) / 1000);
 
-function Bars({ peaks }: { peaks: number[] }) {
+/* Memoized on the peaks: the waveform re-renders with the playhead, the bars only with a new track. */
+const Bars = memo(function Bars({ peaks }: { peaks: number[] }) {
   return <svg viewBox={`0 0 ${peaks.length * 5} 80`} preserveAspectRatio="none" aria-hidden className="absolute inset-0 size-full">
     {peaks.map((n, i) => { const h = Math.max(2, Math.round(n * 76)); return <rect key={i} x={i * 5} y={(80 - h) / 2} width={3} height={h} fill="currentColor"/>; })}
   </svg>;
-}
+});
 
 type Marker = { at: number; label: string; tone: string };
 /** A stretch of the track the next transition covers: where the outgoing deck leaves, or where the incoming one enters. */
 type Region = { from: number; to: number; label: string; tone: string };
-type WaveformProps = { id: DeckId; peaks: number[]; progress: number; position: number; duration: number; enabled: boolean; markers: Marker[]; regions: Region[];
+type WaveformProps = { id: DeckId; peaks: number[]; positions: DeckPositions; duration: number; enabled: boolean; markers: Marker[]; regions: Region[];
   onSeek: (fraction: number) => void; onStep: (seconds: number) => void; onBrowse: () => void };
 /* The track overview, and a seek slider: click or drag to move, the arrows step 5 s (Page up and Page down 30 s), Home
    and End go to the ends. Empty, it says how to load a track and offers the file picker. */
-function Waveform({ id, peaks, progress, position, duration, enabled, markers, regions, onSeek, onStep, onBrowse }: WaveformProps) {
+function Waveform({ id, peaks, positions, duration, enabled, markers, regions, onSeek, onStep, onBrowse }: WaveformProps) {
+  const position = useDeckPosition(positions, id);
+  const progress = duration ? Math.max(0, Math.min(1, position / duration)) : 0;
   const root = useRef<HTMLDivElement>(null);
   const setProgress = useRef<((value: number) => void) | null>(null);
   const dragging = useRef(false);
@@ -84,10 +89,21 @@ type Props = {
   marks: { out?: [number, number]; in?: [number, number] };
   onSelect: () => void; onPlay: () => void; onSkip: (beats: number) => void; onSync: () => void;
   onLoop: () => void; onSeek: (seconds: number) => void; onVolume: (value: number) => void; onBrowse: () => void;
+  /** Why the deck plays but is not heard, and how to bring it back. */
+  silent?: string | null; onHear?: () => void;
+  /** The library, and the action that puts one of its tracks on this deck. Without them the header only names the track. */
+  library?: Track[]; onLoadTrack?: (trackId: string) => void;
+  /** The live playhead, read by the parts that show it so the card does not re-render as the deck plays. */
+  positions: DeckPositions;
 };
-export function DeckCard({ id, deck, track, selected, marks, onSelect, onPlay, onSkip, onSync, onLoop, onSeek, onVolume, onBrowse }: Props) {
+
+/* The time readout, on its own so only it re-renders, once a second, while the deck plays. */
+function DeckTime({ id, positions, duration }: { id: DeckId; positions: DeckPositions; duration: number }) {
+  const position = useDeckPosition(positions, id, 1);
+  return <>{formatTime(position)}<StatusStripUnit>/ {formatTime(duration)}</StatusStripUnit></>;
+}
+export function DeckCard({ id, deck, track, selected, marks, onSelect, onPlay, onSkip, onSync, onLoop, onSeek, onVolume, onBrowse, silent, onHear, library, onLoadTrack, positions }: Props) {
   const number = id === "A" ? 1 : 2;
-  const progress = deck.duration ? Math.max(0, Math.min(1, deck.position / deck.duration)) : 0;
   const looping = deck.loopEnd !== null;
   const keys = DECK_KEYS[id];
   const at = (s: number) => Math.max(0, Math.min(1, s / deck.duration));
@@ -105,24 +121,35 @@ export function DeckCard({ id, deck, track, selected, marks, onSelect, onPlay, o
   return <Frame data-deck={id} aria-label={`Deck ${number}`} onFocus={onSelect} onPointerDown={onSelect} variant={selected ? "panel" : "frame"} className="min-w-0 transition-colors duration-(--dur-state) ease-out">
     <FrameHeader>
       {track && <Cover track={track} size={22}/>}
-      <FrameTitle title={track ? `${track.title} · ${track.artist}` : undefined}>{track?.title ?? "No track loaded"}</FrameTitle>
+      {library?.length && onLoadTrack
+        ? <div className="min-w-0 flex-1" onPointerDown={e => e.stopPropagation()}>
+            <Pick size="sm" value={track?.id ?? null} placeholder="Choose a track" aria-label={`Track on deck ${number}`}
+              items={library.map(t => ({ value: t.id, label: `${t.title} · ${t.artist}` }))} onValueChange={onLoadTrack}/>
+          </div>
+        : <FrameTitle title={track ? `${track.title} · ${track.artist}` : undefined}>{track?.title ?? "No track loaded"}</FrameTitle>}
       <FrameStatus>
-        <Status size="sm" status={deck.playing ? "running" : track ? "paused" : "idle"}><TextSwap>{deck.playing ? "Playing" : track ? "Cued" : "Empty"}</TextSwap></Status>
+        {silent
+          ? <Hint label={`${silent}. Click to hear this deck.`}>
+              <Button size="sm" variant="ghost" onClick={onHear} aria-label={`Deck ${number} plays but is silent: ${silent}. Make it heard`}>
+                <Status size="sm" status="warn"><TextSwap>Silent</TextSwap></Status>
+              </Button>
+            </Hint>
+          : <Status size="sm" status={deck.playing ? "running" : track ? "paused" : "idle"}><TextSwap>{deck.playing ? "Playing" : track ? "Cued" : "Empty"}</TextSwap></Status>}
       </FrameStatus>
       <FrameValue meta>Deck {number}</FrameValue>
     </FrameHeader>
     <FrameBody padding="none">
       <StatusStrip variant="plain" label={`Deck ${number} readout`}>
-        <StatusStripCell><StatusStripLabel>Time</StatusStripLabel><StatusStripValue>{formatTime(deck.position)}<StatusStripUnit>/ {formatTime(deck.duration)}</StatusStripUnit></StatusStripValue></StatusStripCell>
+        <StatusStripCell><StatusStripLabel>Time</StatusStripLabel><StatusStripValue><DeckTime id={id} positions={positions} duration={deck.duration}/></StatusStripValue></StatusStripCell>
         <StatusStripCell><StatusStripLabel>Tempo</StatusStripLabel><StatusStripValue>{track?.bpm ? (track.bpm * deck.rate).toFixed(1) : "-"}<StatusStripUnit>bpm</StatusStripUnit></StatusStripValue></StatusStripCell>
         <StatusStripCell><StatusStripLabel>Transition</StatusStripLabel><StatusStripValue>{marks.out ? `Out ${formatTime(marks.out[0])}` : marks.in ? `In ${formatTime(marks.in[0])}` : "-"}</StatusStripValue></StatusStripCell>
         <StatusStripCell><StatusStripLabel>Gain</StatusStripLabel><StatusStripValue>{deck.trim > 0 ? "+" : ""}{deck.trim.toFixed(1)}<StatusStripUnit>dB</StatusStripUnit></StatusStripValue></StatusStripCell>
       </StatusStrip>
     </FrameBody>
     <FrameBody padding="none">
-      <Waveform id={id} peaks={track?.peaks?.length ? track.peaks : PLACEHOLDER} progress={progress} position={deck.position} duration={deck.duration}
+      <Waveform id={id} peaks={track?.peaks?.length ? track.peaks : PLACEHOLDER} positions={positions} duration={deck.duration}
         enabled={!!track} markers={markers} regions={regions} onBrowse={onBrowse}
-        onSeek={f => onSeek(f * deck.duration)} onStep={s => onSeek(Math.max(0, Math.min(deck.duration, deck.position + s)))}/>
+        onSeek={f => onSeek(f * deck.duration)} onStep={s => onSeek(Math.max(0, Math.min(deck.duration, positions.get(id) + s)))}/>
     </FrameBody>
     <FrameFooter>
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">

@@ -81,7 +81,9 @@ function visibleName(el: HTMLElement): string {
     if (node instanceof Element && node.getAttribute('role') === 'img') { text += node.getAttribute('aria-label') ?? ''; return; }
     node.childNodes.forEach(walk);
   };
-  walk(el);
+  // The button's own aria-hidden is not looked at: an open modal hides the page behind it that way, and the button
+  // keeps its name. Only hidden parts inside it (an icon, a pending mark) are left out.
+  el.childNodes.forEach(walk);
   return text.trim();
 }
 

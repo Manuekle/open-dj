@@ -28,6 +28,12 @@
   --resize-dur: 300ms;
   --resize-ease: cubic-bezier(0.22, 1, 0.36, 1);
 
+  /* Page side-by-side: the transition editor stepping between the transitions of the set (next enters from the right). */
+  --page-slide-dur: 250ms;
+  --page-slide-distance: 8px;
+  --page-blur: 3px;
+  --page-slide-ease: cubic-bezier(0.22, 1, 0.36, 1);
+
   /* Modal open and close: the drop target. */
   --modal-open-dur: 250ms;
   --modal-close-dur: 150ms;
@@ -174,4 +180,23 @@
 
 @media (prefers-reduced-motion: reduce) {
   .t-modal { transition: none !important; }
+}
+
+/* Page side-by-side: both pages cross at once, the old one leaving to one side while the new one arrives from the other.
+   --t-dir is 1 when stepping forward, -1 back. The leaving page sits over the arriving one, which sets the height. */
+.t-page-swap { position: relative; }
+.t-page-swap > .t-page-leaving { position: absolute; inset: 0; pointer-events: none; }
+.t-page-entering { animation: t-page-in var(--page-slide-dur) var(--page-slide-ease) both; }
+.t-page-leaving { animation: t-page-out var(--page-slide-dur) var(--page-slide-ease) both; }
+@keyframes t-page-in {
+  from { opacity: 0; filter: blur(var(--page-blur)); transform: translateX(calc(var(--t-dir, 1) * var(--page-slide-distance))); }
+  to   { opacity: 1; filter: blur(0); transform: none; }
+}
+@keyframes t-page-out {
+  from { opacity: 1; filter: blur(0); transform: none; }
+  to   { opacity: 0; filter: blur(var(--page-blur)); transform: translateX(calc(var(--t-dir, 1) * var(--page-slide-distance) * -1)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .t-page-entering, .t-page-leaving { animation: none !important; }
+  .t-page-swap > .t-page-leaving { display: none; }
 }

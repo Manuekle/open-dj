@@ -399,6 +399,10 @@ export class Sampler {
   setDrumVolume(v: number) { this.drums.gain.setTargetAtTime(v, this.context.currentTime, 0.02); }
   setPattern(pattern: Pattern) { this.pattern = pattern; }
   setBpm(bpm: number) { this.bpm = bpm; this.apply(this.settings); }
+  /** Where the bars of something else fall on this clock, so the beat plays on them: the tempo it runs at and the
+      context time of one of its bar starts. Null, or a function that answers null, leaves the beat on its own tempo. */
+  private lock: (() => { bpm: number; barStart: number } | null) | null = null;
+  setLock(lock: (() => { bpm: number; barStart: number } | null) | null) { this.lock = lock; }
   get playing() { return this.timer !== null; }
 
   start(onStep: (step: number) => void) {
@@ -409,6 +413,16 @@ export class Sampler {
     this.nextTime = this.context.currentTime + 0.06;
     const tick = () => {
       // Schedule every step that starts in the next 120 ms; the timer runs every 25 ms, so one late frame never drops a hit.
+      const grid = this.lock?.() ?? null;
+      if (grid && grid.bpm > 0) {
+        // Locked: each step lands on the other clock's sixteenth, its first step on that clock's bar start.
+        this.bpm = grid.bpm;
+        const len = 60 / grid.bpm / 4;
+        let n = Math.round((this.nextTime - grid.barStart) / len);
+        if (grid.barStart + n * len < this.context.currentTime + 0.005) n++;
+        this.nextTime = grid.barStart + n * len;
+        this.nextStep = ((n % STEPS) + STEPS) % STEPS;
+      }
       while (this.nextTime < this.context.currentTime + 0.12) {
         const step = this.nextStep, when = this.nextTime;
         DRUMS.forEach(d => { if (this.pattern[d.id]?.[step]) this.hit(d.id, when); });

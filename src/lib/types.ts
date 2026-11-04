@@ -1,3 +1,4 @@
+import type { SmartStyle } from "@/lib/transition-planner";
 import type { Rhythm, Structure } from "@/lib/analysis-types";
 export type { Rhythm, Structure };
 export type DeckId = "A" | "B";
@@ -12,18 +13,38 @@ export type StemName = "vocals" | "drums" | "bass" | "other";
 export const STEMS: { id: StemName; label: string }[] = [
   { id: "vocals", label: "Vocals" }, { id: "drums", label: "Drums" }, { id: "bass", label: "Bass" }, { id: "other", label: "Melody" },
 ];
-export type VolumeCurve = "smooth" | "overlap" | "fade";
-export type TransitionEq = "none" | "bass";
-export type TransitionEffect = "none" | "lowpass" | "echo" | "rise" | "reverb" | "flanger" | "swap";
-export type TransitionPreset = "auto" | "fade" | "rise" | "blend" | "space" | "custom";
-/** What a transition does with stems: "vocals" takes the outgoing vocals out early and brings the incoming ones in late. */
-export type TransitionStems = "none" | "vocals";
+/** Volume envelopes a transition can take. "custom" draws both through the points the DJ placed (TransitionPlan.curve). */
+export type VolumeCurve = "smooth" | "linear" | "scurve" | "overlap" | "early" | "late" | "fade" | "cut" | "custom";
+/** One point of a custom volume envelope: progress t and gain g, both 0..1. */
+export type CurvePoint = { t: number; g: number };
+/** A custom envelope's interior points per side. The ends are fixed: the outgoing side runs from full to silent, the
+    incoming one from silent to full. */
+export type CustomCurve = { out: CurvePoint[]; in: CurvePoint[] };
+/** "bass" swaps the lows at eqAt; "gradual" eases the outgoing lows down while the incoming ones come up. */
+export type TransitionEq = "none" | "bass" | "gradual";
+export type TransitionEffect = "none" | "lowpass" | "rise" | "hpout" | "lpin" | "echo" | "dub" | "reverb" | "flanger" | "swap";
+export type TransitionPreset = "auto" | "fade" | "rise" | "blend" | "space" | "echo" | "cut" | "dub" | "stem" | "custom";
+/** What a transition does with stems (Demucs). "vocals" takes the outgoing vocals out early and brings the incoming ones
+    in late; "bass" swaps the bass stems at eqAt; "drums" brings the incoming drums in first and the rest of it later;
+    "acapella" leaves the outgoing vocals over the incoming instrumental; "full" does the vocal handover, the bass swap
+    and the drum swap together. */
+export type TransitionStems = "none" | "vocals" | "bass" | "drums" | "acapella" | "full";
+/** The shape of a transition, without where it sits: what a DJ saves as an AutoMix template. */
+export type TransitionShape = Pick<TransitionPlan, "volume" | "eq" | "effect"> & Partial<Pick<TransitionPlan, "curve" | "eqAt" | "intensity" | "echoBeats" | "stems">>;
 /** One transition between two tracks: where the outgoing one starts leaving, where the incoming one enters, how long
     it takes in bars of the outgoing track, and how volume, low end and effects move across it. */
 export type TransitionPlan = {
   fromId: string; toId: string; outAt: number; inAt: number; bars: number;
   volume: VolumeCurve; eq: TransitionEq; effect: TransitionEffect; preset: TransitionPreset;
   stems?: TransitionStems;
+  /** The DJ's own volume envelopes, read when volume is "custom". */
+  curve?: CustomCurve;
+  /** Where the bass swaps (eq "bass", stems "bass" and "full") and a cut lands, 0..1 of the transition. Default 0.5. */
+  eqAt?: number;
+  /** How hard the effect works: 1 is its designed depth, 0 leaves it out, up to 1.5 pushes it. Default 1. */
+  intensity?: number;
+  /** The echo's delay in beats of the outgoing track (effects "echo" and "dub"). Default 0.75. */
+  echoBeats?: number;
   /** Who chose it, and why: one line per decision, read in the transition editor. */
   by?: "auto" | "ai";
   notes?: string[];
@@ -60,6 +81,8 @@ export interface StoredTrack {
   addedAt: number;
   /** Seconds to the first beat of the grid. */
   firstBeat?: number;
+  /** The DJ set bpm, firstBeat and the beat grid by hand (lib/manual-tempo.ts). A new analysis keeps them. */
+  tempoManual?: boolean;
   /** Median loudness, dBFS. */
   loudness?: number;
   /** Loudness per second, dBFS. */
@@ -104,13 +127,15 @@ export interface DeckState {
   color: number;
   fx: EffectName;
   fxAmount: number;
+  /** The effect's time in beats: the echo's delay, a quarter of a flanger or phaser sweep. */
+  fxBeats: number;
   /** Which stems sound, in STEMS order. Only a track with stems plays them apart. */
   stems: boolean[];
 }
 export const makeDeck = (): DeckState => ({
   trackId: null, playing: false, position: 0, duration: 0, rate: 1, cue: 0,
   hotCues: Array<number | null>(8).fill(null), loopStart: null, loopEnd: null, loopBeats: 4,
-  volume: 0.82, eq: { high: 0, mid: 0, low: 0 }, trim: 0, color: 0, fx: "off", fxAmount: 0.45,
+  volume: 0.82, eq: { high: 0, mid: 0, low: 0 }, trim: 0, color: 0, fx: "off", fxAmount: 0.45, fxBeats: 0.5,
   stems: [true, true, true, true],
 });
 export function formatTime(value: number): string {
@@ -137,6 +162,8 @@ export interface Session {
   queue?: PlayQueue;
   /** Each deck's own tempo, as the DJ set it, so a mix that matched tempo can hand it back. */
   naturalRates?: Record<DeckId, number>;
+  /** Smart AutoMix's style, so a project keeps how its transitions are planned. */
+  smartStyle?: SmartStyle;
 }
 /** A set the DJ works on: its own tracks (by id, the audio is shared) and the last state of the session. */
 export interface Project {

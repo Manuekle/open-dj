@@ -11,7 +11,7 @@ export { RHYTHM_VERSION, STRUCTURE_VERSION };
 
 /** Bump when the tempo, key, loudness or band analysis changes, so stored tracks are analyzed again. The rhythm and
     structure results carry their own versions (analysis-types.ts) and are re-derived on their own. */
-export const ANALYSIS_VERSION = 5;
+export const ANALYSIS_VERSION = 6;
 
 export type Analysis = {
   duration: number;
@@ -48,6 +48,10 @@ export const RATE = 11025;
 /** Pulse below which no tempo is given. Mixed dance and pop tracks read 5 to 10, kick drums alone 20 and up, held tones
     and white noise 1.7 to 2.6. */
 const MIN_PULSE = 3;
+/** Pulse from which a tempo under MIN_PULSE is still kept when the beat tracker independently finds the same one (within
+    TEMPO_AGREE). Sparse or syncopated pop reads 2 to 3 here with a clear, agreed tempo; held tones and noise read under 2. */
+const AGREED_PULSE = 2;
+const TEMPO_AGREE = 0.03;
 const HOP = 128;
 
 /** The analysis of mono samples at RATE, the copy analyzeFile decodes a file to. */
@@ -89,6 +93,8 @@ export function analyzeSamples(x: Float32Array): Analysis {
 
   let bpm: number | null = null;
   let firstBeat = 0, pulse = 0;
+  /** The legacy estimate that the pulse threshold dropped, kept in case the beat tracker agrees with it. */
+  let weak: { bpm: number; firstBeat: number } | null = null;
   if (duration >= 10) {
     // Coarse tempo: autocorrelation summed over the first four beat multiples, with a prior around 122 bpm.
     const ac = (lag: number) => { let s = 0; for (let f = Math.ceil(lag); f < frames; f++) s += onset[f] * at(f - lag); return s / (frames - lag); };
@@ -119,7 +125,10 @@ export function analyzeSamples(x: Float32Array): Analysis {
     }
     pulse = mean > 0 ? top / mean : 0;
     // Without a pulse (silence, a held tone, noise) there is no beat to find, and none is made up.
-    if (pulse < MIN_PULSE) { bpm = null; firstBeat = 0; }
+    if (pulse < MIN_PULSE) {
+      if (bpm !== null && pulse >= AGREED_PULSE) weak = { bpm, firstBeat };
+      bpm = null; firstBeat = 0;
+    }
     bpm = bpm === null ? null : Math.round(bpm * 100) / 100;
   }
 
@@ -137,6 +146,11 @@ export function analyzeSamples(x: Float32Array): Analysis {
   // legacy pulse is a false positive, and no tempo (so no beat grid) is better than a made-up one.
   const vetoed = bpm !== null && vetoTempo(pulse, rhythm);
   if (vetoed) { bpm = null; firstBeat = 0; }
+  // Two independent readings of one tempo outweigh a low pulse score: keep it when the tracker found a real grid.
+  else if (bpm === null && weak && rhythm.bpm !== null && (rhythm.grid === "steady" || rhythm.grid === "variable")
+    && Math.abs(rhythm.bpm / weak.bpm - 1) <= TEMPO_AGREE) {
+    bpm = Math.round(weak.bpm * 100) / 100; firstBeat = weak.firstBeat;
+  }
 
   return { duration, peaks, bpm, pulse: Math.round(pulse * 100) / 100, firstBeat: Math.round(firstBeat * 1000) / 1000, loudness, energy,
     ...spectrum(x, Math.floor(duration)), lufs: integratedLufs(x), analysis: ANALYSIS_VERSION, rhythm, structure };

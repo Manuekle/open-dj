@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
 import { gsap, useGSAP } from "@/lib/gsap";
 import { cn } from "@/lib/sodium/utils";
@@ -39,6 +40,9 @@ export function DJApp() {
   const [search, setSearch] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [link, setLink] = useState({ url: "", start: "", end: "" });
+  const submitLink = async () => { if (await dj.importUrl(link.url, link.start, link.end)) { setLinkOpen(false); setLink({ url: "", start: "", end: "" }); } };
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
   const drop = usePresence(dragging);
@@ -113,6 +117,15 @@ export function DJApp() {
             <span className="hidden sm:inline"><TextSwap>{dj.recording ? "Stop" : "Record"}</TextSwap></span>
           </Button>
         </Hint>
+        <Hint label="Play any track as a rhythm game">
+          <Link href="/play" className="inline-flex h-(--control-sm) items-center px-2.5 type-label-sm text-text-2 hover:text-text-1">Rhythm</Link>
+        </Hint>
+        <Hint label="See each track's stems on their own lanes">
+          <Link href="/stems" className="inline-flex h-(--control-sm) items-center px-2.5 type-label-sm text-text-2 hover:text-text-1">Stems</Link>
+        </Hint>
+        <Hint label="Record your voice over stems, with autotune">
+          <Link href="/studio" className="inline-flex h-(--control-sm) items-center px-2.5 type-label-sm text-text-2 hover:text-text-1">Studio</Link>
+        </Hint>
         <Hint label="Keyboard shortcuts" keys="?">
           <Button variant="ghost" size="icon-sm" onClick={() => setShortcutsOpen(true)} aria-label="Keyboard shortcuts"><Icon icon={Keyboard}/></Button>
         </Hint>
@@ -136,7 +149,9 @@ export function DJApp() {
         {(["A", "B"] as const).map(id => <DeckCard key={id} id={id} deck={dj.decks[id]} track={id === "A" ? dj.trackA : dj.trackB}
           selected={dj.activeDeck === id} marks={marksFor(id)} onSelect={() => dj.setActiveDeck(id)} onPlay={() => void dj.togglePlay(id)}
           onSkip={n => dj.skipBeats(id, n)} onSync={() => dj.sync(id)} onLoop={() => dj.decks[id].loopEnd !== null ? dj.toggleLoop(id) : dj.beatLoop(id, 4)}
-          onSeek={n => dj.seek(id, n)} onVolume={n => dj.volume(id, n)} onBrowse={() => dj.browse(id)}/>)}
+          onSeek={n => dj.seek(id, n)} onVolume={n => dj.volume(id, n)} onBrowse={() => dj.browse(id)}
+          library={projects.tracks} onLoadTrack={trackId => { const t = byId.get(trackId); if (t) dj.loadToDeck(id, t); }}
+          silent={dj.silent[id]} onHear={() => dj.makeHeard(id)} positions={dj.positions}/>)}
       </div>
 
       <AutoMixPanel {...automix.props}/>
@@ -151,7 +166,7 @@ export function DJApp() {
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <TrackLibrary tracks={filtered} total={projects.tracks.length} search={search} loaded={{ A: dj.decks.A.trackId, B: dj.decks.B.trackId }}
           selected={dj.selectedTrackId} activeDeck={dj.activeDeck} importing={dj.importing} className="min-w-0 xl:col-span-2"
-          onSelect={dj.setSelectedTrackId} onLoad={dj.loadToDeck} onDelete={id => void projects.removeTrack(id)} onEdit={setEditingId} onAdd={() => dj.browse()}
+          onSelect={dj.setSelectedTrackId} onLoad={dj.loadToDeck} onDelete={id => void projects.removeTrack(id)} onEdit={setEditingId} onAdd={() => dj.browse()} onAddLink={() => setLinkOpen(true)}
           onQueue={id => dj.queue.add([id])} onQueueAll={() => dj.queue.add(filtered.map(t => t.id))} queued={queued}
           stemsAvailable={dj.stemsAvailable} splitting={dj.splitting} onSplit={id => void dj.splitStems(id)}/>
         <Recordings mixes={dj.mixes} recording={dj.recording} recordSeconds={dj.recordSeconds} mixName={dj.mixName} onMixName={dj.setMixName}
@@ -187,6 +202,27 @@ export function DJApp() {
         <DialogFooter>
           <DialogClose>Done</DialogClose>
           <Button variant="destructive" disabled={!dj.tracks.length} onClick={() => { setSettingsOpen(false); setClearOpen(true); }}>Clear library</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog open={linkOpen} onOpenChange={setLinkOpen}>
+      <DialogContent size="sm">
+        <DialogHeader><DialogTitle>Import from a link</DialogTitle></DialogHeader>
+        <DialogBody>
+          <form id="import-link" className="flex flex-col gap-4" onSubmit={e => { e.preventDefault(); void submitLink(); }}>
+            <DialogDescription>The machine running this app downloads the audio with yt-dlp and ffmpeg. Use only audio you have the right to copy: public domain, Creative Commons or your own.</DialogDescription>
+            <Field><FieldLabel>Link</FieldLabel>
+              <Input type="url" required placeholder="https://www.youtube.com/watch?v=…" value={link.url} onChange={e => setLink({ ...link, url: e.currentTarget.value })}/></Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field><FieldLabel>Start (optional)</FieldLabel><Input placeholder="9:51" value={link.start} onChange={e => setLink({ ...link, start: e.currentTarget.value })}/></Field>
+              <Field><FieldLabel>End (optional)</FieldLabel><Input placeholder="14:04" value={link.end} onChange={e => setLink({ ...link, end: e.currentTarget.value })}/></Field>
+            </div>
+          </form>
+        </DialogBody>
+        <DialogFooter>
+          <DialogClose>Cancel</DialogClose>
+          <Button type="submit" form="import-link" pending={dj.importing} pendingLabel="Downloading" disabled={!link.url.trim()}>Import</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

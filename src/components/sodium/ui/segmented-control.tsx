@@ -1,6 +1,6 @@
 'use client';
 
-import {createContext, useContext, useId, useRef, type ReactNode} from 'react';
+import {createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode} from 'react';
 import {Radio as RadioPrimitive} from '@base-ui/react/radio';
 import {RadioGroup as RadioGroupPrimitive} from '@base-ui/react/radio-group';
 import {Toggle as TogglePrimitive} from '@base-ui/react/toggle';
@@ -31,7 +31,7 @@ import {cn, controlHeight} from '@/lib/sodium/utils';
 // value it has shown, or countMax, so a live count that goes from 99 to 100 never moves the segments.
 
 // Joined cells: each segment after the first overlaps its neighbour by the edge, so two edges make one seam.
-const segmentedVariants = cva('inline-flex w-fit max-w-full items-stretch [&>[data-slot=segmented-control-item]~[data-slot=segmented-control-item]]:-ms-px', {
+const segmentedVariants = cva('relative inline-flex w-fit max-w-full items-stretch [&>[data-slot=segmented-control-item]~[data-slot=segmented-control-item]]:-ms-px', {
   variants: {
     size: {
       sm: `${controlHeight.sm} type-label-sm`,
@@ -89,9 +89,39 @@ function SegmentedControl(props: SegmentedControlProps) {
     </ToggleGroupPrimitive>;
   }
   const {multiple: _m, onValueChange, size: _s, fill: _f, className: _c, children: _ch, countMax: _cm, ...rest} = props;
-  return <RadioGroupPrimitive data-slot="segmented-control" data-size={size} onValueChange={value => onValueChange?.(value as string)} className={classes} {...rest}>
+  return <RadioGroupPrimitive data-slot="segmented-control" data-size={size} onValueChange={value => onValueChange?.(value as string)} className={cn(classes, thumbHover)} {...rest}>
+    <SlidingThumb value={props.value} />
     <ModeContext.Provider value={ctx}>{children}</ModeContext.Provider>
   </RadioGroupPrimitive>;
+}
+
+// The chosen segment's fill slides under the labels to the new one: transform + width on --dur-fast / --ease-smooth-out,
+// written from the checked item's measured box. The first measure and any resize snap with no transition.
+const thumbHover = '[&:has([data-checked]:hover)>[data-slot=segmented-control-thumb]]:[--k:var(--primary-light-hover)]';
+function SlidingThumb({value}: {value?: string}) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [animate, setAnimate] = useState(false);
+  const place = () => {
+    const thumb = ref.current;
+    const item = thumb?.parentElement?.querySelector<HTMLElement>('[data-slot=segmented-control-item][data-checked]');
+    if (!thumb) return;
+    if (!item) { thumb.style.opacity = '0'; return; }
+    thumb.style.opacity = '1';
+    thumb.style.width = `${item.offsetWidth}px`;
+    thumb.style.height = `${item.offsetHeight}px`;
+    thumb.style.transform = `translateX(${item.offsetLeft}px)`;
+  };
+  useLayoutEffect(place, [value]);
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setAnimate(true));
+    const parent = ref.current?.parentElement;
+    if (!parent) return () => cancelAnimationFrame(raf);
+    const ro = new ResizeObserver(() => { setAnimate(false); place(); requestAnimationFrame(() => setAnimate(true)); });
+    ro.observe(parent);
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
+  }, []);
+  return <span ref={ref} aria-hidden data-slot="segmented-control-thumb"
+    className={cn('checked pointer-events-none absolute top-0 left-0 z-1 w-0 will-change-[transform,width]', animate && 'transition-[transform,width,background-color,border-color,--k] duration-250 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none')} />;
 }
 
 type SegmentedControlItemProps = {
@@ -111,7 +141,7 @@ const fmt = new Intl.NumberFormat('en-US');
 const itemBase = [
   'relative inline-flex min-w-0 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap select-none [-webkit-tap-highlight-color:transparent]',
   'light-motion',
-  'hover:z-(--z-raised) focus-visible:z-(--z-raised)',
+  'focus-visible:z-(--z-raised)',
   '[&_svg]:pointer-events-none [&_svg]:size-(--icon) [&_svg]:shrink-0',
   'data-disabled:cursor-not-allowed',
 ].join(' ');
@@ -119,7 +149,9 @@ const itemBase = [
 const itemSize: Record<Size, string> = {sm: 'px-2.5 type-label-sm', default: 'px-3 type-label', lg: 'px-4 type-label-lg'};
 // The chosen segment: the checked recipe, over its neighbours so its whole edge shows.
 const on = 'checked z-(--z-raised) data-disabled:border-line data-disabled:bg-well data-disabled:text-text-disabled forced-colors:[forced-color-adjust:none] forced-colors:bg-[Highlight] forced-colors:text-[HighlightText]';
-const off = 'border border-line bg-check-off text-text-2 hover:not-data-disabled:bg-check-off-hover hover:not-data-disabled:text-text-1 active:not-data-disabled:bg-check-off data-disabled:bg-well data-disabled:text-text-disabled forced-colors:border-[ButtonText] forced-colors:data-disabled:text-[GrayText]';
+// In single mode the fill belongs to the sliding thumb; the checked item keeps only its label colour over it.
+const onSingle = 'z-(--z-raised) border border-transparent bg-transparent text-check-mark data-disabled:border-line data-disabled:bg-well data-disabled:text-text-disabled forced-colors:[forced-color-adjust:none] forced-colors:text-[HighlightText]';
+const off = 'border border-line bg-check-off text-text-2 hover:not-data-disabled:bg-check-off-hover hover:not-data-disabled:text-text-1 hover:not-data-disabled:border-line active:not-data-disabled:bg-check-off data-disabled:bg-well data-disabled:text-text-disabled forced-colors:border-[ButtonText] forced-colors:data-disabled:text-[GrayText]';
 
 function SegmentedControlItem({className, children, count, countMax: itemMax, ...props}: SegmentedControlItemProps) {
   const {size, countMax: groupMax, multiple} = useContext(ModeContext);
@@ -128,7 +160,6 @@ function SegmentedControlItem({className, children, count, countMax: itemMax, ..
   const seen = useRef(0);
   if (count !== undefined) seen.current = Math.max(seen.current, count);
   const reserve = itemMax ?? groupMax ?? seen.current;
-  const title = typeof children === 'string' ? children : undefined;
   const content = <>
     <span data-slot="segmented-control-label" className="inline-flex min-w-0 items-center gap-1.5"><span className="min-w-0 truncate">{children}</span></span>
     {count !== undefined && <span data-slot="segmented-control-count" aria-hidden className="grid shrink-0 justify-items-start opacity-70 [grid-template-areas:'c']">
@@ -136,9 +167,9 @@ function SegmentedControlItem({className, children, count, countMax: itemMax, ..
       <span id={countId} className="[grid-area:c]">{fmt.format(count)}</span>
     </span>}
   </>;
-  const shared = {'data-slot': 'segmented-control-item', title, 'aria-describedby': count !== undefined ? countId : undefined};
+  const shared = {'data-slot': 'segmented-control-item', 'aria-describedby': count !== undefined ? countId : undefined};
   if (multiple) return <TogglePrimitive {...shared} {...props} className={state => cn(itemBase, itemSize[size], state.pressed ? on : off, className)}>{content}</TogglePrimitive>;
-  return <RadioPrimitive.Root {...shared} {...props} className={state => cn(itemBase, itemSize[size], state.checked ? on : off, className)}>{content}</RadioPrimitive.Root>;
+  return <RadioPrimitive.Root {...shared} {...props} className={state => cn(itemBase, itemSize[size], state.checked ? onSingle : off, className)}>{content}</RadioPrimitive.Root>;
 }
 
 export {SegmentedControl, SegmentedControlItem, segmentedVariants, type SegmentedControlProps, type SegmentedControlItemProps};

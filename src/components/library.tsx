@@ -14,11 +14,36 @@ import { Button } from "@/components/sodium/ui/button";
 import { Cover } from "@/components/track-editor";
 import { Hint } from "@/components/hint";
 import { Digits, IconSwap, TextSwap } from "@/components/motion";
-import { Add, AudioWave, CloudUpload, Download, Edit, Icon, Pause, Play, TrashCan } from "@/components/sodium/icon";
+import { Add, AudioWave, CloudUpload, Download, Edit, Icon, Launch, Pause, Play, TrashCan } from "@/components/sodium/icon";
+
+/* A preview of one library track on the browser's own output, apart from the decks and the master bus, so it never lands in a
+   recording or a mix. It starts a third of the way in, where a track is usually past its intro, and stops at the end, on a
+   second press, when another track is previewed, when the track is removed, or when the library goes away. */
+function usePreview(tracks: Track[]) {
+  const [playing, setPlaying] = useState<string | null>(null);
+  const audio = useRef<HTMLAudioElement | null>(null);
+  const stop = () => { audio.current?.pause(); audio.current = null; setPlaying(null); };
+  useEffect(() => () => { audio.current?.pause(); audio.current = null; }, []);
+  useEffect(() => { if (audio.current && playing && !tracks.some(t => t.id === playing)) stop(); }, [tracks, playing]);
+  const toggle = (track: Track) => {
+    const same = playing === track.id;
+    stop();
+    if (same) return;
+    const el = new Audio(track.url);
+    el.preload = "auto";
+    el.onended = () => { if (audio.current === el) stop(); };
+    el.onerror = () => { if (audio.current === el) stop(); };
+    audio.current = el;
+    setPlaying(track.id);
+    const start = () => { if (track.duration > 60) el.currentTime = track.duration / 3; void el.play().catch(() => { if (audio.current === el) stop(); }); };
+    if (el.readyState >= 1) start(); else el.addEventListener("loadedmetadata", start, { once: true });
+  };
+  return { playing, toggle };
+}
 
 type LibraryProps = {
   tracks: Track[]; total: number; search: string; loaded: Record<DeckId, string | null>; selected: string | null; activeDeck: DeckId; importing: boolean;
-  className?: string; onSelect: (id: string) => void; onLoad: (id: DeckId, track: Track) => void; onDelete: (id: string) => void; onEdit: (id: string) => void; onAdd: () => void;
+  className?: string; onSelect: (id: string) => void; onLoad: (id: DeckId, track: Track) => void; onDelete: (id: string) => void; onEdit: (id: string) => void; onAdd: () => void; onAddLink?: () => void;
   /** Stem separation: whether Demucs runs on this machine, progress by track id, and the action that starts one. */
   stemsAvailable: boolean | null; splitting: Record<string, number>; onSplit: (id: string) => void;
   /** The play queue: adds a track to its end, and how many times each track is queued now. Without onQueue the column is not shown. */
@@ -26,13 +51,17 @@ type LibraryProps = {
 };
 /* The library, with adding tracks folded into it: its footer says how and holds the picker, so no separate upload region
    stands beside it. Its scroll box takes the rest of the row, so it lines up with the recordings beside it. */
-export function TrackLibrary({ tracks, total, search, loaded, selected, activeDeck, importing, className, onSelect, onLoad, onDelete, onEdit, onAdd, stemsAvailable, splitting, onSplit, onQueue, onQueueAll, queued }: LibraryProps) {
+export function TrackLibrary({ tracks, total, search, loaded, selected, activeDeck, importing, className, onSelect, onLoad, onDelete, onEdit, onAdd, onAddLink, stemsAvailable, splitting, onSplit, onQueue, onQueueAll, queued }: LibraryProps) {
   const deckOf = (id: string) => loaded.A === id ? "Deck 1" : loaded.B === id ? "Deck 2" : null;
+  const preview = usePreview(tracks);
   return <Table title="Track library" count={search ? `${tracks.length} of ${total}` : total} maxHeight={440} stickyHeader
     frameClassName={className} containerClassName="flex-1"
     actions={<>
       {onQueueAll && <Hint label="Add every track shown to the end of the queue">
         <Button size="sm" variant="ghost" disabled={!tracks.length} onClick={onQueueAll}>Queue all</Button>
+      </Hint>}
+      {onAddLink && <Hint label="Import audio from a link, optionally cut to a range">
+        <Button size="sm" variant="ghost" onClick={onAddLink}><Icon icon={Launch}/>From link</Button>
       </Hint>}
       <Hint label="Add tracks"><Button size="icon-sm" variant="ghost" onClick={onAdd} aria-label="Add tracks"><Icon icon={Add}/></Button></Hint>
     </>}
@@ -41,17 +70,24 @@ export function TrackLibrary({ tracks, total, search, loaded, selected, activeDe
       <Button size="sm" variant="secondary" onClick={onAdd} pending={importing} pendingLabel="Analyzing"><Icon icon={CloudUpload}/>Browse files</Button>
     </>}>
     <TableHeader><TableRow>
-      <TableHead>Title</TableHead><TableHead>Artist</TableHead><TableHead>Album</TableHead><TableHead numeric>Bpm</TableHead><TableHead numeric>Length</TableHead>
-      <TableHead>Added</TableHead><TableHead>Stems</TableHead><TableHead>On deck</TableHead>{onQueue && <TableHead>Queue</TableHead>}<TableHead>Load</TableHead><TableHead><span className="sr-only">Edit and remove</span></TableHead>
+      <TableHead><span className="sr-only">Preview</span></TableHead><TableHead>Title</TableHead><TableHead>Artist</TableHead><TableHead numeric>Bpm</TableHead><TableHead numeric>Length</TableHead>
+      <TableHead>Stems</TableHead>{onQueue && <TableHead>Queue</TableHead>}<TableHead>Load</TableHead><TableHead><span className="sr-only">Edit and remove</span></TableHead>
     </TableRow></TableHeader>
     <TableBody>
       {tracks.map(t => <TableRow key={t.id} selected={selected === t.id} onClick={() => onSelect(t.id)} onDoubleClick={() => onLoad(activeDeck, t)}>
-        <TableCell><div className="flex items-center gap-2"><Cover track={t} size={28}/><span>{t.title}</span></div></TableCell>
-        <TableCell>{t.artist}</TableCell>
-        <TableCell>{t.album ?? "-"}</TableCell>
+        <TableCell>
+          <Hint label={preview.playing === t.id ? "Stop preview" : "Preview from the middle of the track"}>
+            <Button size="icon-sm" variant="ghost" onClick={e => { e.stopPropagation(); preview.toggle(t); }} aria-pressed={preview.playing === t.id}
+              aria-label={`${preview.playing === t.id ? "Stop preview of" : "Preview"} ${t.title}`}><IconSwap active={preview.playing === t.id} from={Play} to={Pause}/></Button>
+          </Hint>
+        </TableCell>
+        <TableCell className="max-w-48">
+          <div className="flex items-center gap-2"><Cover track={t} size={28}/><span className="min-w-0 truncate" title={t.title}>{t.title}</span>
+            {deckOf(t.id) ? <Status size="sm" status="running">{deckOf(t.id)}</Status> : <span className="sr-only">Not loaded</span>}</div>
+        </TableCell>
+        <TableCell className="max-w-28"><span className="block truncate" title={t.artist}>{t.artist}</span></TableCell>
         <TableCell numeric>{t.bpm ? t.bpm.toFixed(1) : "-"}</TableCell>
         <TableCell numeric>{formatTime(t.duration)}</TableCell>
-        <TableCell>{formatDate(t.addedAt)}</TableCell>
         <TableCell>
           {t.stems ? <Status size="sm" status="ok">Ready</Status>
             : splitting[t.id] !== undefined ? <Status size="sm" status="running">{`Splitting ${Math.round(splitting[t.id] * 100)}%`}</Status>
@@ -60,17 +96,16 @@ export function TrackLibrary({ tracks, total, search, loaded, selected, activeDe
                 aria-label={`Split ${t.title} into stems`}>Split</Button>
             </Hint>}
         </TableCell>
-        <TableCell>{deckOf(t.id) ? <Status size="sm" status="running">{deckOf(t.id)}</Status> : <span className="sr-only">Not loaded</span>}</TableCell>
         {onQueue && <TableCell>
           <Button size="sm" variant="ghost" onClick={e => { e.stopPropagation(); onQueue(t.id); }}
             aria-label={`Add ${t.title} to the queue${queued?.[t.id] ? `, queued ${queued[t.id]} ${queued[t.id] === 1 ? "time" : "times"}` : ""}`}>
-            <Icon icon={Add}/>{queued?.[t.id] ? `Queued ${queued[t.id]}` : "Queue"}
+            <Icon icon={Add}/>{queued?.[t.id] ? `×${queued[t.id]}` : null}
           </Button>
         </TableCell>}
         <TableCell>
           <div className="flex gap-1">
-            <Button size="sm" variant="ghost" onClick={e => { e.stopPropagation(); onLoad("A", t); }} aria-label={`Load ${t.title} on deck 1`}>Deck 1</Button>
-            <Button size="sm" variant="ghost" onClick={e => { e.stopPropagation(); onLoad("B", t); }} aria-label={`Load ${t.title} on deck 2`}>Deck 2</Button>
+            <Button size="sm" variant="ghost" onClick={e => { e.stopPropagation(); onLoad("A", t); }} aria-label={`Load ${t.title} on deck 1`}>1</Button>
+            <Button size="sm" variant="ghost" onClick={e => { e.stopPropagation(); onLoad("B", t); }} aria-label={`Load ${t.title} on deck 2`}>2</Button>
           </div>
         </TableCell>
         <TableCell>
@@ -84,7 +119,7 @@ export function TrackLibrary({ tracks, total, search, loaded, selected, activeDe
           </div>
         </TableCell>
       </TableRow>)}
-      {!tracks.length && <TableEmpty colSpan={onQueue ? 11 : 10} title={total ? "No tracks match your search" : "Your library is empty"}
+      {!tracks.length && <TableEmpty colSpan={onQueue ? 9 : 8} title={total ? "No tracks match your search" : "Your library is empty"}
         description={total ? "Clear the search to see every track." : "Add audio files to start a session. They stay in this browser."}
         action={total ? undefined : <Button onClick={onAdd}>Add tracks</Button>}/>}
     </TableBody>

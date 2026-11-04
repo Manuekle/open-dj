@@ -102,6 +102,8 @@ export function Studio({ dj }: { dj: DJ }) {
   const [bpm, setBpm] = useState(PATTERNS[0].bpm);
   const [drumVolume, setDrumVolume] = useState(0.8);
   const [beating, setBeating] = useState(false);
+  /** The beat follows the live deck: its tempo, and its steps on the deck's bars. */
+  const [locked, setLocked] = useState(false);
   const [step, setStep] = useState(-1);
   // MIDI: the keyboards found (null until connected), and an imported song with the keys it is holding down.
   const [keyboards, setKeyboards] = useState<string[] | null>(null);
@@ -114,8 +116,23 @@ export function Studio({ dj }: { dj: DJ }) {
   const midiAccess = useRef<MIDIAccess | null>(null);
   const from = (octave + 1) * 12;
   const latest = useRef({ tone, root, sound, pattern, bpm, drumVolume, from, fxCategory, fxIndex });
+  const lockRef = useRef(false);
+  useEffect(() => { lockRef.current = locked; }, [locked]);
   useEffect(() => { latest.current = { tone, root, sound, pattern, bpm, drumVolume, from, fxCategory, fxIndex }; });
 
+  // The live deck's bar grid on the audio clock: its tempo as heard and the context time of its last bar start. The media
+  // clock is read every scheduler tick, so a tempo change, a seek or a mix into the other deck carries the beat with it.
+  const djRef = useRef(dj);
+  useEffect(() => { djRef.current = dj; });
+  const deckGrid = useCallback(() => {
+    const d = djRef.current, out = d.output();
+    const id = d.live, track = d.liveTrack, deck = d.decks[id];
+    if (!out || !track?.bpm || !deck.playing) return null;
+    const bpm = track.bpm * (deck.rate || 1), beat = 60 / track.bpm;
+    const beats = (d.mediaTime(id) - (track.firstBeat ?? 0)) / beat;
+    const intoBar = ((beats % 4) + 4) % 4;
+    return { bpm, barStart: out.context.currentTime - intoBar * 60 / bpm };
+  }, []);
   /* The sampler lives on the DJ engine's clock and plays into its master, so the record button takes it too. It is made
      on first use, and again if the engine was rebuilt. */
   const ensure = useCallback(async () => {
@@ -128,15 +145,17 @@ export function Studio({ dj }: { dj: DJ }) {
       s.apply(l.sound); s.setPattern({ ...emptyPattern(), ...l.pattern }); s.setBpm(l.bpm); s.setDrumVolume(l.drumVolume);
       await s.useTone(l.tone === SAMPLE || l.tone === FX ? "keys" : l.tone);
       s.setFx(FX_LIBRARY[l.fxCategory][l.fxIndex]);
+      s.setLock(lockRef.current ? deckGrid : null);
       sampler.current = s;
     }
     return sampler.current;
-  }, [dj]);
+  }, [dj, deckGrid]);
 
   useEffect(() => { sampler.current?.apply(sound); }, [sound]);
   useEffect(() => { sampler.current?.setPattern(pattern); }, [pattern]);
   useEffect(() => { sampler.current?.setBpm(bpm); }, [bpm]);
   useEffect(() => { sampler.current?.setDrumVolume(drumVolume); }, [drumVolume]);
+  useEffect(() => { sampler.current?.setLock(locked ? deckGrid : null); }, [locked, deckGrid]);
   useEffect(() => () => { sampler.current?.destroy(); sampler.current = null; }, []);
 
   const heldRef = useRef(new Set<number>());
@@ -443,13 +462,19 @@ export function Studio({ dj }: { dj: DJ }) {
             <Pick placeholder="Your pattern" items={PATTERNS.map(p => ({ value: p.id, label: p.label }))} value={preset || null} className="w-44"
               onValueChange={applyPreset}/>
           </Field>
-          <div className="flex items-center gap-2">
-            <Knob label="Tempo" value={bpm} min={60} max={180} reset={120} format={v => `${Math.round(v)} BPM`} tone="text-data-1" onChange={v => setBpm(Math.round(v))}/>
-            <span className="type-code-sm text-text-1" aria-hidden>{bpm} BPM</span>
+          <div className={cn("flex items-center gap-2", locked && "pointer-events-none opacity-60")} aria-disabled={locked || undefined}>
+            <Knob label="Tempo" value={locked && deckTempo ? deckTempo : bpm} min={60} max={180} reset={120} format={v => `${Math.round(v * 10) / 10} BPM`} tone="text-data-1" onChange={v => setBpm(Math.round(v))}/>
+            <span className="type-code-sm text-text-1" aria-hidden>{locked && deckTempo ? deckTempo : bpm} BPM</span>
           </div>
-          <Hint label={deckTempo ? `Set the beat to ${deckTempo} BPM` : "Load a track with a tempo on a deck first"}>
-            <Button size="sm" variant="ghost" disabled={!deckTempo} onClick={() => deckTempo && setBpm(Math.round(deckTempo))}>Match deck tempo</Button>
+          <Hint label={deckTempo ? "Play the beat on the live deck's bars, at its tempo, following tempo changes and mixes" : "Play a track with a tempo on a deck first"}>
+            <Field orientation="horizontal" className="w-auto gap-2">
+              <Switch size="sm" checked={locked} disabled={!deckTempo && !locked} onCheckedChange={setLocked}/>
+              <FieldLabel>Lock to deck</FieldLabel>
+            </Field>
           </Hint>
+          {!locked && <Hint label={deckTempo ? `Set the beat to ${deckTempo} BPM` : "Load a track with a tempo on a deck first"}>
+            <Button size="sm" variant="ghost" disabled={!deckTempo} onClick={() => deckTempo && setBpm(Math.round(deckTempo))}>Match tempo</Button>
+          </Hint>}
           <div className="flex items-center gap-2">
             <Knob label="Drum volume" value={drumVolume} min={0} max={1} reset={0.8} format={pct} tone="text-data-6" onChange={setDrumVolume}/>
             <span className="type-label-sm text-text-2" aria-hidden>Drums {pct(drumVolume)}</span>

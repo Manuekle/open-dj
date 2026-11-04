@@ -46,11 +46,20 @@ export function useAutoMixPanelProps(dj: DJ, library: Track[]): { props: AutoMix
   } : null, [rating]);
 
 
+  // What the AI and Demucs are doing, by track title, so the settings can say it.
+  const splitId = Object.keys(dj.splitting)[0] ?? null;
+  const splitTitle = splitId ? dj.tracks.find(t => t.id === splitId)?.title ?? null : null;
+  const splitPct = splitId ? Math.round((dj.splitting[splitId] ?? 0) * 100) : 0;
+  const planTitles = dj.planning ? dj.planning.split(">").map(id => dj.tracks.find(t => t.id === id)?.title ?? "a track").join(" into ") : null;
+  const services = useMemo(() => ({
+    ai: dj.aiAvailable, stems: dj.stemsAvailable, planning: planTitles, splitting: splitTitle ? `${splitTitle}: ${splitPct}%` : null,
+  }), [dj.aiAvailable, dj.stemsAvailable, planTitles, splitTitle, splitPct]);
+
   return {
     decks,
     props: {
       auto, controls, queue, tracks: dj.tracks, library, decks, live: dj.live, transition: dj.transition, mediaTime,
-      score, fallback: dj.smart?.fallback ?? null, style: dj.smartStyle, onStyle: dj.setSmartStyle,
+      score, fallback: dj.smart?.fallback ?? null, style: dj.smartStyle, onStyle: dj.setSmartStyle, services,
     },
   };
 }

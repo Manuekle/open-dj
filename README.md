@@ -130,6 +130,10 @@ Saving is automatic, and the header shows when it last happened. Every change re
 
 To move a set to another computer, copy the `data` folder next to `compose.yaml` there and start it.
 
+### Import from a link
+
+**From link** in the library downloads one track's audio and imports it like a dropped file, optionally cut to a start and end (`MM:SS` or `HH:MM:SS`). `src/app/api/import-url/route.ts` runs [yt-dlp](https://github.com/yt-dlp/yt-dlp) (the maintained youtube-dl fork) and ffmpeg on the machine serving the app, so both must be installed (`YTDLP_BIN` and `FFMPEG_BIN` override their paths). Use it only for audio you have the right to copy: public domain, Creative Commons or your own.
+
 ### Studio
 
 A sampler and 16-step drum machine on the same master, so a recording takes it too: play a built-in tone or a dropped-in sample from the on-screen piano, the computer keyboard or a MIDI keyboard, shape it with an effects chain, and play back Standard MIDI Files (`src/components/studio.tsx`, `src/lib/sampler.ts`, `src/lib/midi.ts`).

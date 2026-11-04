@@ -6,11 +6,15 @@ import type { EffectName } from "@/lib/types";
    The path has two kinds of controls, kept apart on purpose:
    - the DJ's own: trim, the three EQ bands, the color filter, the effect, the channel fader, the crossfader;
    - the lanes in `mix`, which only a running transition drives (MixSession): a bass shelf, a low and a high pass, a dry
-     and a send level for the transition's own effect, a volume and a vocals level.
+     and a send level for the transition's own effect, a volume and a level per stem.
    A transition never writes to a control the DJ also uses. AudioParam timelines cannot be shared: a curve in flight
    makes any event inside it throw, and a cancelled mix would otherwise leave the DJ's knobs wherever it stopped. */
 
-export type AudioEffect = { input: AudioNode; output: AudioNode; lfo?: OscillatorNode };
+export type AudioEffect = {
+  input: AudioNode; output: AudioNode; lfo?: OscillatorNode;
+  /** The echo's delay line, so its time can follow the tempo. */
+  delay?: DelayNode;
+};
 export type EffectKind = Exclude<EffectName, "off" | "filter">;
 export type SendKind = "echo" | "reverb" | "flanger";
 
@@ -28,7 +32,9 @@ export type MixLanes = {
   sum: GainNode;
   /** The deck's level inside a transition. Rests at 1. */
   volume: GainNode;
-  /** Level of the vocals stem. Rests at 1. */
+  /** Level of each stem, in STEMS order (vocals, drums, bass, melody). Rests at 1. They act on a stems file only. */
+  stems: GainNode[];
+  /** The vocals stem's lane, stems[0]. */
   vocals: GainNode;
   /** The transition's own effects, built on first use. */
   rack: Partial<Record<SendKind, AudioEffect>>;
@@ -79,10 +85,10 @@ function noise(seed: number) {
 
 export function buildEffect(ctx: BaseAudioContext, kind: EffectKind): AudioEffect {
   if (kind === "echo") {
-    const delay = ctx.createDelay(1.0); delay.delayTime.value = 0.29;
+    const delay = ctx.createDelay(2.0); delay.delayTime.value = 0.29;
     const feedback = ctx.createGain(); feedback.gain.value = 0.3;
     delay.connect(feedback); feedback.connect(delay);
-    return { input: delay, output: delay };
+    return { input: delay, output: delay, delay };
   }
   if (kind === "reverb") {
     const convolver = ctx.createConvolver();
@@ -103,8 +109,14 @@ export function buildEffect(ctx: BaseAudioContext, kind: EffectKind): AudioEffec
     return { input: flanger, output: flanger, lfo };
   }
   if (kind === "phaser") {
-    const phaser = ctx.createBiquadFilter(); phaser.type = "allpass"; phaser.frequency.value = 1100; phaser.Q.value = 3;
-    return { input: phaser, output: phaser };
+    // Two all-pass stages swept by one slow LFO, two octaves either side of 1.1 kHz, so the notches move.
+    const a = ctx.createBiquadFilter(); a.type = "allpass"; a.frequency.value = 1100; a.Q.value = 3;
+    const b = ctx.createBiquadFilter(); b.type = "allpass"; b.frequency.value = 1100; b.Q.value = 3;
+    a.connect(b);
+    const lfo = ctx.createOscillator(); lfo.frequency.value = 0.25;
+    const depth = ctx.createGain(); depth.gain.value = 2400;
+    lfo.connect(depth); depth.connect(a.detune); depth.connect(b.detune); lfo.start();
+    return { input: a, output: b, lfo };
   }
   const crusher = ctx.createWaveShaper(); const curve = new Float32Array(8192);
   for (let i = 0; i < curve.length; i++) { const x = (i / (curve.length - 1)) * 2 - 1; curve[i] = Math.round(x * 16) / 16; }
@@ -134,12 +146,14 @@ export function createDeckGraph(ctx: BaseAudioContext, destination: AudioNode): 
   const cross = ctx.createGain();
 
   const nyquist = ctx.sampleRate / 2;
+  const stemLanes = [0, 1, 2, 3].map(() => ctx.createGain());
   const mix: MixLanes = {
     low: (() => { const f = ctx.createBiquadFilter(); f.type = "lowshelf"; f.frequency.value = 280; return f; })(),
     // Butterworth, and at rest parked at Nyquist where a low pass is flat to the top of the band.
     lp: filterAt(ctx, "lowpass", nyquist, Math.SQRT1_2),
     hp: filterAt(ctx, "highpass", COLOR_HP_REST_HZ, Math.SQRT1_2),
-    dry: ctx.createGain(), send: ctx.createGain(), sum: ctx.createGain(), volume: ctx.createGain(), vocals: ctx.createGain(),
+    dry: ctx.createGain(), send: ctx.createGain(), sum: ctx.createGain(), volume: ctx.createGain(),
+    stems: stemLanes, vocals: stemLanes[0],
     rack: {},
   };
   mix.send.gain.value = 0;
@@ -148,7 +162,7 @@ export function createDeckGraph(ctx: BaseAudioContext, destination: AudioNode): 
   const stems = [0, 1, 2, 3].map(k => {
     const pair = ctx.createChannelMerger(2); splitter.connect(pair, 2 * k, 0); splitter.connect(pair, 2 * k + 1, 1);
     const gain = ctx.createGain(); pair.connect(gain);
-    if (k === 0) { gain.connect(mix.vocals); mix.vocals.connect(trim); } else gain.connect(trim);
+    gain.connect(mix.stems[k]); mix.stems[k].connect(trim);
     return gain;
   });
 
@@ -170,6 +184,16 @@ export function ensureRack(ctx: BaseAudioContext, deck: DeckGraph, kind: SendKin
   deck.mix.send.connect(effect.input); effect.output.connect(deck.mix.sum);
   deck.mix.rack[kind] = effect;
   return effect;
+}
+
+/** Times a deck's effects to its tempo: the echo repeats every `beats` beats, and the flanger and phaser sweep once
+    every four times that. `beat` is the heard seconds per beat; without one (no tempo) the effects keep their own times. */
+export function applyEffectTime(ctx: BaseAudioContext, d: DeckGraph, beat: number | null, beats: number) {
+  if (!beat || !Number.isFinite(beat) || beat <= 0) return;
+  const t = ctx.currentTime, span = Math.max(0.03, beat * beats);
+  d.effects.echo.delay?.delayTime.setTargetAtTime(Math.min(1.9, span), t, 0.04);
+  d.effects.flanger.lfo?.frequency.setTargetAtTime(1 / (span * 4), t, 0.05);
+  d.effects.phaser.lfo?.frequency.setTargetAtTime(1 / (span * 4), t, 0.05);
 }
 
 /** One-knob color filter: below 0 sweeps a low pass down, above 0 a high pass up. Both filters move in cents, so a sweep

@@ -7,7 +7,12 @@ import { Icon, type SodiumIcon } from "@/components/sodium/icon";
 /* React bindings for the transitions.dev recipes in app/transitions.css. Each one only toggles the recipe's documented
    classes and attributes; the timing lives in the CSS variables, read back here where JS has to wait on it. */
 
-const ms = (el: Element, name: string, fallback: number) => parseFloat(getComputedStyle(el).getPropertyValue(name)) || fallback;
+/** A duration variable in milliseconds. The built CSS may write 140ms as ".14s", so the unit is read, not assumed. */
+const ms = (el: Element, name: string, fallback: number) => {
+  const value = getComputedStyle(el).getPropertyValue(name).trim();
+  const n = parseFloat(value);
+  return Number.isFinite(n) ? (value.endsWith("ms") ? n : value.endsWith("s") ? n * 1000 : n) : fallback;
+};
 
 /** Icon swap: two glyphs in one slot, cross-faded with blur and scale. `active` shows `to`. */
 export function IconSwap({ active, from, to, size }: { active: boolean; from: SodiumIcon; to: SodiumIcon; size?: 14 | 16 | 20 }) {
@@ -82,6 +87,32 @@ export function AutoHeight({ children, className }: { children: React.ReactNode;
   return <div className={cn("t-resize overflow-hidden", height !== null && "h-(--h)")}
     style={height === null ? undefined : { "--h": `${height}px` } as React.CSSProperties}>
     <div ref={inner} className={className}>{children}</div>
+  </div>;
+}
+
+/** Page side-by-side: when `id` changes, the old content (as it last was) leaves to one side while the new one arrives from
+    the other, both at once. `order` says which way: a higher one than before is forward (arrives from the right). While
+    `id` stays the same the content simply follows its children, so a live editor keeps updating. The first mount and
+    reduced motion do not animate. */
+export function PageSwap({ id, order, children, className }: { id: string; order: number; children: React.ReactNode; className?: string }) {
+  type Shown = { id: string; order: number; node: React.ReactNode; dir: 1 | -1; entering: boolean; leaving: { node: React.ReactNode; nonce: number } | null; nonce: number };
+  const [shown, setShown] = useState<Shown>({ id, order, node: children, dir: 1, entering: false, leaving: null, nonce: 0 });
+  if (shown.id !== id) {
+    setShown({ id, order, node: children, dir: order >= shown.order ? 1 : -1, entering: true, leaving: { node: shown.node, nonce: shown.nonce + 1 }, nonce: shown.nonce + 1 });
+  } else if (shown.node !== children) {
+    setShown({ ...shown, node: children });
+  }
+  const el = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!shown.leaving) return;
+    const timer = window.setTimeout(() => setShown(prev => prev.nonce === shown.nonce ? { ...prev, entering: false, leaving: null } : prev),
+      el.current ? ms(el.current, "--page-slide-dur", 250) + 30 : 280);
+    return () => window.clearTimeout(timer);
+  }, [shown.leaving, shown.nonce]);
+  return <div ref={el} className={cn("t-page-swap", className)} style={{ "--t-dir": shown.dir } as React.CSSProperties}>
+    {/* Keyed by the nonce, so each step mounts a fresh element and plays its animation from the start. */}
+    <div key={`in-${shown.nonce}`} className={shown.entering ? "t-page-entering" : undefined}>{shown.node}</div>
+    {shown.leaving && <div key={`out-${shown.leaving.nonce}`} aria-hidden inert className="t-page-leaving">{shown.leaving.node}</div>}
   </div>;
 }
 

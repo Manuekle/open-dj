@@ -542,6 +542,24 @@ describe("races and edits while it works", () => {
     expect(ctl.getSnapshot().nextTrackId).toBe("b");
   });
 
+  it("plays the track already cued on the other deck, not the one the queue would pick", async () => {
+    // The queue goes a, b, c, d; the DJ cued "d" on deck B before turning AutoMix on.
+    const { host, ctl } = setup("abcd");
+    host.decks.B = { ...blank(), trackId: "d" };
+    ctl.enable(); await ctl.settled();
+    expect(ctl.getSnapshot()).toMatchObject({ nextTrackId: "d", nextSource: "manual", phase: "ready" });
+    expect(host.loads.some(l => l.trackId === "b")).toBe(false);
+    runUpToOutPoint(host, ctl, "a", "d"); ctl.tick(); await ctl.settled();
+    expect(host.mixes[0].plan.toId).toBe("d");
+  });
+
+  it("takes the cued track as the queue's own entry when it is the one that comes next", async () => {
+    const { host, ctl } = setup("abc");
+    host.decks.B = { ...blank(), trackId: "b" };
+    ctl.enable(); await ctl.settled();
+    expect(ctl.getSnapshot()).toMatchObject({ nextTrackId: "b", nextSource: "queue" });
+  });
+
   it("re-plans when the DJ loads a different track on the live deck", async () => {
     const { host, ctl } = setup("abcd");
     ctl.enable(); await ctl.settled();
@@ -572,6 +590,16 @@ describe("races and edits while it works", () => {
     host.decks.A.position = 100 - PREROLL;
     ctl.tick(); await ctl.settled();
     expect(host.mixes[0].plan).toBe(edited);
+  });
+
+  it("publishes a plan changed outside it (an edit, an AI plan) when asked to replan", async () => {
+    const { host, ctl } = setup("ab");
+    ctl.enable(); await ctl.settled();
+    const edited = { ...planOf(host, "a", "b"), outAt: 120, by: "ai" as const };
+    host.planFor = () => edited;
+    expect(ctl.getSnapshot().plan).not.toBe(edited);
+    ctl.replan();
+    expect(ctl.getSnapshot().plan).toBe(edited);
   });
 });
 

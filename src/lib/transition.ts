@@ -1,4 +1,4 @@
-import type { Track, TransitionEffect, TransitionEq, TransitionPlan, TransitionPreset, TransitionStems, VolumeCurve } from "@/lib/types";
+import type { CurvePoint, CustomCurve, Track, TransitionEffect, TransitionEq, TransitionPlan, TransitionPreset, TransitionShape, TransitionStems, VolumeCurve } from "@/lib/types";
 import { barIndexAt, barStarts, beatTimes, gridBpm } from "@/lib/grid";
 import { entryPoint, exitPoint } from "@/lib/mix-points";
 
@@ -8,29 +8,79 @@ import { entryPoint, exitPoint } from "@/lib/mix-points";
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 const eqPower = (v: number) => Math.sin(clamp01(v) * Math.PI / 2);
 
-/** Gain of the outgoing and incoming track, 0..1. */
-export function volumeAt(curve: VolumeCurve, t: number) {
+const smoothstep = (v: number) => { const x = clamp01(v); return x * x * (3 - 2 * x); };
+const ramp = (t: number, from: number, to: number) => clamp01((t - from) / (to - from));
+/** Where a plan's bass swap and cut land, 0..1, held away from the ends so each side keeps some room. */
+export const swapPoint = (plan: Pick<TransitionPlan, "eqAt">) => Math.max(0.15, Math.min(0.85, plan.eqAt ?? 0.5));
+
+/** Gain of the outgoing and incoming track, 0..1, for a preset curve. A custom curve without points reads as smooth. */
+export function volumeAt(curve: VolumeCurve, t: number, at = 0.5) {
   if (curve === "overlap") return { out: eqPower((1 - t) / 0.25), in: eqPower(t / 0.25) };
   if (curve === "fade") return { out: eqPower(1 - t / 0.6), in: eqPower((t - 0.4) / 0.6) };
+  if (curve === "linear") return { out: clamp01(1 - t), in: clamp01(t) };
+  // Both hold near full and swap quickly through the middle.
+  if (curve === "scurve") { const s = smoothstep((t - 0.2) / 0.6); return { out: eqPower(1 - s), in: eqPower(s) }; }
+  // The incoming track is up by 30% while the old one leaves across the whole length.
+  if (curve === "early") return { out: eqPower(1 - t), in: eqPower(t / 0.3) };
+  // The old track holds full to 70% and leaves fast, under an incoming track that rises across the length.
+  if (curve === "late") return { out: eqPower((1 - t) / 0.3), in: eqPower(t) };
+  // A cut on the swap point, over 2% of the length so it does not click.
+  if (curve === "cut") { const k = ramp(t, at - 0.01, at + 0.01); return { out: eqPower(1 - k), in: eqPower(k) }; }
   return { out: eqPower(1 - t), in: eqPower(t) };
 }
 
-/** Low band gain in dB: the bass swaps over the middle tenth. */
-export function lowAt(eq: TransitionEq, t: number) {
-  if (eq === "none") return { out: 0, in: 0 };
-  const k = clamp01((t - 0.45) / 0.1);
-  return { out: -24 * k, in: -24 * (1 - k) };
+/** A custom side's points with its fixed ends, sorted by progress. */
+export function sidePoints(side: "out" | "in", points: CurvePoint[] = []): CurvePoint[] {
+  const inner = points.filter(p => p.t > 0 && p.t < 1).map(p => ({ t: p.t, g: clamp01(p.g) })).sort((a, b) => a.t - b.t);
+  return [{ t: 0, g: side === "out" ? 1 : 0 }, ...inner, { t: 1, g: side === "out" ? 0 : 1 }];
+}
+/** Gain through a side's points: an ease between each pair, so the line is smooth through every point and flat on it. */
+export function curveGain(points: CurvePoint[], t: number) {
+  const x = clamp01(t);
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    if (x <= b.t) {
+      const u = b.t - a.t <= 1e-6 ? 1 : (x - a.t) / (b.t - a.t);
+      return a.g + (b.g - a.g) * (1 - Math.cos(Math.PI * u)) / 2;
+    }
+  }
+  return points[points.length - 1]?.g ?? 0;
+}
+/** Points that draw a preset curve closely enough to start editing from it. */
+export function seedCurve(curve: VolumeCurve, at = 0.5): CustomCurve {
+  const ts = curve === "cut" ? [at - 0.02, at + 0.02] : [0.25, 0.5, 0.75];
+  return { out: ts.map(t => ({ t, g: volumeAt(curve, t, at).out })), in: ts.map(t => ({ t, g: volumeAt(curve, t, at).in })) };
+}
+/** Gain of the outgoing and incoming track for a plan, 0..1: its preset curve, or the DJ's own points. The engine and
+    every drawing of the envelope read this one function. */
+export function volumeOf(plan: Pick<TransitionPlan, "volume" | "curve" | "eqAt">, t: number) {
+  if (plan.volume === "custom" && plan.curve) return { out: curveGain(sidePoints("out", plan.curve.out), t), in: curveGain(sidePoints("in", plan.curve.in), t) };
+  return volumeAt(plan.volume, t, swapPoint(plan));
+}
+/** Share of a transition's length both sides play near full level: 0.5 for the equal-power crossfade. */
+export function overlapShare(plan: Pick<TransitionPlan, "volume" | "curve" | "eqAt">) {
+  let both = 0;
+  for (let i = 0; i <= 40; i++) { const v = volumeOf(plan, i / 40); if (Math.min(v.out, v.in) > 0.5) both++; }
+  return Math.min(1, both / 41 * 1.5);
 }
 
-const ramp = (t: number, from: number, to: number) => clamp01((t - from) / (to - from));
+/** Low band gain in dB: "bass" swaps over a tenth around the swap point, "gradual" eases each side across the length. */
+export function lowAt(eq: TransitionEq, t: number, at = 0.5) {
+  if (eq === "none") return { out: 0, in: 0 };
+  if (eq === "gradual") return { out: -24 * smoothstep(t / 0.7), in: -24 * (1 - smoothstep((t - 0.3) / 0.7)) };
+  const k = clamp01((t - at + 0.05) / 0.1);
+  return { out: -24 * k, in: -24 * (1 - k) };
+}
+export const lowOf = (plan: Pick<TransitionPlan, "eq" | "eqAt">, t: number) => lowAt(plan.eq, t, swapPoint(plan));
 
 export type SendFx = "echo" | "reverb" | "flanger";
 /** The send effect an automatic effect routes the outgoing track through, if any. */
 export function effectSend(effect: TransitionEffect): SendFx | null {
-  return effect === "echo" ? "echo" : effect === "reverb" || effect === "swap" ? "reverb" : effect === "flanger" ? "flanger" : null;
+  return effect === "echo" || effect === "dub" ? "echo" : effect === "reverb" || effect === "swap" ? "reverb" : effect === "flanger" ? "flanger" : null;
 }
 /** Whether an effect moves the deck color filters (low or high pass). */
-export const effectUsesColor = (effect: TransitionEffect) => effect === "lowpass" || effect === "rise" || effect === "reverb" || effect === "swap";
+export const effectUsesColor = (effect: TransitionEffect) => effect === "lowpass" || effect === "rise" || effect === "reverb" || effect === "swap"
+  || effect === "hpout" || effect === "lpin" || effect === "dub";
 
 /** Everything an effect does at t: the color filter of each side (-1 low-pass .. +1 high-pass), the send effect's depth
     on the outgoing deck and how far its dry signal gives way to that send (the wash). */
@@ -38,6 +88,12 @@ export function effectAt(effect: TransitionEffect, t: number) {
   const none = { outColor: 0, inColor: 0, amount: 0, wash: 0 };
   if (effect === "lowpass") return { ...none, outColor: -0.85 * t * t };
   if (effect === "rise") return { ...none, inColor: 0.7 * (1 - t) * (1 - t) };
+  // The old track thins out under a rising high pass on its own.
+  if (effect === "hpout") return { ...none, outColor: 0.85 * t * t };
+  // The new track opens from a closed low pass on its own.
+  if (effect === "lpin") return { ...none, inColor: -0.85 * (1 - t) * (1 - t) };
+  // A dub out: the old track closes behind a low pass while a long echo builds on it and takes over.
+  if (effect === "dub") return { ...none, outColor: -0.55 * t * t, amount: 0.85 * ramp(t, 0.25, 0.85), wash: 0.45 * ramp(t, 0.55, 1) };
   if (effect === "echo") return { ...none, amount: 0.7 * ramp(t, 0.5, 1) };
   // A space out: the old track closes behind a low pass and drowns in its own reverb as it leaves.
   if (effect === "reverb") return { ...none, outColor: -0.4 * t * t, amount: 0.95 * ramp(t, 0.2, 0.9), wash: 0.55 * ramp(t, 0.5, 1) };
@@ -47,6 +103,16 @@ export function effectAt(effect: TransitionEffect, t: number) {
   if (effect === "swap") return { outColor: 0.85 * t * t, inColor: -0.85 * (1 - t) * (1 - t), amount: 0.6 * ramp(t, 0.35, 1), wash: 0.25 * ramp(t, 0.6, 1) };
   return none;
 }
+
+
+/** An effect at t for a plan, its depth scaled by the plan's intensity (filters held to their range). */
+export function effectOf(plan: Pick<TransitionPlan, "effect" | "intensity">, t: number) {
+  const e = effectAt(plan.effect, t), k = Math.max(0, Math.min(1.5, plan.intensity ?? 1));
+  const c = (v: number) => Math.max(-1, Math.min(1, v * k));
+  return { outColor: c(e.outColor), inColor: c(e.inColor), amount: Math.min(1, e.amount * k), wash: Math.min(0.9, e.wash * k) };
+}
+/** The echo's delay in beats for a plan. */
+export const echoBeatsOf = (plan: Pick<TransitionPlan, "echoBeats">) => plan.echoBeats ?? 0.75;
 
 /** The multiple (half, same or double time) that brings a tempo of `own` bpm nearest `target`, so a 64 bpm track
     reads as 128 against a 128 bpm one and is matched beat for every other beat instead of stretched. */
@@ -84,17 +150,64 @@ export function autoTrim(track: Track) {
 
 /** Gain of the outgoing and incoming vocals stem: the old voice is gone by 40%, the new one arrives from 60%. */
 export function vocalsAt(stems: TransitionStems | undefined, t: number) {
-  if (stems !== "vocals") return { out: 1, in: 1 };
+  if (stems !== "vocals" && stems !== "full") return { out: 1, in: 1 };
   return { out: 1 - clamp01((t - 0.1) / 0.3), in: clamp01((t - 0.6) / 0.3) };
 }
+/** Whether a stem move hands the vocals over, swaps the bass stems, or needs stems at all. */
+export const handsVocals = (stems?: TransitionStems) => stems === "vocals" || stems === "full";
+export const swapsBassStem = (stems?: TransitionStems) => stems === "bass" || stems === "full";
+export const movesStems = (stems?: TransitionStems) => !!stems && stems !== "none";
+/** Gain of each stem of the outgoing and incoming track, in STEMS order (vocals, drums, bass, melody), for a plan. The
+    volume curve still runs on top: these only take stems out of what each side plays. */
+export function stemsOf(plan: Pick<TransitionPlan, "stems" | "eqAt">, t: number) {
+  const out = [1, 1, 1, 1], inn = [1, 1, 1, 1], at = swapPoint(plan), move = plan.stems ?? "none";
+  if (move === "none") return { out, in: inn };
+  if (handsVocals(move)) { const v = vocalsAt(move, t); out[0] = v.out; inn[0] = v.in; }
+  if (swapsBassStem(move)) { const k = ramp(t, at - 0.04, at + 0.04); out[2] = 1 - k; inn[2] = k; }
+  if (move === "drums" || move === "full") {
+    // The incoming drums come in under the old track; its own drums leave in the middle, and the rest of the new one
+    // (bass, melody, and vocals unless they hand over) arrives through the second half.
+    const k = ramp(t, 0.45, 0.55), rest = ramp(t, 0.5, 0.85);
+    out[1] = 1 - k;
+    if (move === "drums") { inn[0] = rest; inn[2] = rest; }
+    inn[3] = rest;
+  }
+  if (move === "acapella") {
+    // The old track drops to its vocals over the first half, singing over the new instrumental; the new vocals wait for the end.
+    const k = ramp(t, 0.05, 0.5);
+    out[1] = out[2] = out[3] = 1 - k;
+    inn[0] = ramp(t, 0.85, 1);
+  }
+  return { out, in: inn };
+}
 
-export const PRESETS: Record<Exclude<TransitionPreset, "custom">, { label: string; volume: VolumeCurve; eq: TransitionEq; effect: TransitionEffect }> = {
-  auto: { label: "Auto", volume: "smooth", eq: "bass", effect: "lowpass" },
-  fade: { label: "Fade", volume: "fade", eq: "none", effect: "none" },
-  rise: { label: "Rise", volume: "overlap", eq: "none", effect: "rise" },
-  space: { label: "Space", volume: "smooth", eq: "bass", effect: "swap" },
-  blend: { label: "Blend", volume: "smooth", eq: "none", effect: "none" },
+type PresetSpec = { label: string; hint: string; volume: VolumeCurve; eq: TransitionEq; effect: TransitionEffect; stems?: TransitionStems };
+export const PRESETS: Record<Exclude<TransitionPreset, "custom">, PresetSpec> = {
+  auto: { label: "Auto", hint: "Crossfade, bass swap and a low pass on the old track.", volume: "smooth", eq: "bass", effect: "lowpass" },
+  blend: { label: "Blend", hint: "A clean equal-power crossfade, nothing else.", volume: "smooth", eq: "none", effect: "none" },
+  fade: { label: "Fade", hint: "Fade out, then fade in, with a short gap.", volume: "fade", eq: "none", effect: "none" },
+  rise: { label: "Rise", hint: "The new track comes in early behind an opening high pass.", volume: "overlap", eq: "none", effect: "rise" },
+  space: { label: "Space", hint: "Bass swap and a filter swap with reverb on the old track.", volume: "smooth", eq: "bass", effect: "swap" },
+  echo: { label: "Echo out", hint: "The old track holds, then leaves into a beat-timed echo.", volume: "late", eq: "bass", effect: "echo" },
+  dub: { label: "Dub", hint: "A long low-passed echo takes the old track away while the lows ease across.", volume: "scurve", eq: "gradual", effect: "dub" },
+  cut: { label: "Cut", hint: "A hard cut on the swap point, nothing overlaps.", volume: "cut", eq: "none", effect: "none" },
+  stem: { label: "Stems", hint: "A full stem blend: drums first, the bass swaps, the vocals hand over.", volume: "smooth", eq: "none", effect: "none", stems: "full" },
 };
+/** The preset a plan's shape matches, or "custom". */
+export function presetOf(plan: Pick<TransitionPlan, "volume" | "eq" | "effect" | "stems">): TransitionPreset {
+  if (plan.volume === "custom") return "custom";
+  const hit = (Object.keys(PRESETS) as (keyof typeof PRESETS)[]).find(k => {
+    const p = PRESETS[k];
+    return p.volume === plan.volume && p.eq === plan.eq && p.effect === plan.effect && (p.stems ?? null) === (movesStems(plan.stems) ? plan.stems : null);
+  });
+  return hit ?? "custom";
+}
+/** A transition's shape, as saved for an AutoMix template. */
+export function shapeOfPlan(plan: TransitionPlan): TransitionShape {
+  const { volume, curve, eq, eqAt, effect, intensity, echoBeats, stems } = plan;
+  return { volume, eq, effect, ...(volume === "custom" && curve ? { curve } : {}), ...(eqAt !== undefined ? { eqAt } : {}),
+    ...(intensity !== undefined ? { intensity } : {}), ...(echoBeats !== undefined ? { echoBeats } : {}), ...(stems ? { stems } : {}) };
+}
 
 /** Seconds per beat. Without an estimated tempo a nominal 120 bpm only sizes a transition in seconds; nothing snaps to it. */
 export const beatOf = (track: Track) => 60 / (track.bpm ?? 120);

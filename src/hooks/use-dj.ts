@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import { DJEngine } from "@/lib/audio-engine";
+import { DeckPositions } from "@/hooks/use-deck-position";
 import { DEFAULT_GOVERNOR, DriftGovernor, UNLOCKED_MAX_RATE_DEVIATION, UNLOCKED_MAX_TRIM, phaseReading } from "@/lib/drift";
 import { crossGains } from "@/lib/mix-session";
 import { overlayMix } from "@/lib/mix-view";
@@ -9,14 +10,16 @@ import { LOOKAHEAD, LatencyTracker, prerollSeconds } from "@/lib/preroll";
 import { AutoMix, PREROLL, type AutoMixHost } from "@/lib/automix";
 import { MediaLoadError, whenMediaBuffered } from "@/lib/media-ready";
 import { readQueue } from "@/lib/queue";
+import { gridFromTempo } from "@/lib/manual-tempo";
 import { gridBpm } from "@/lib/grid";
 import { ANALYSIS_VERSION, analyzeFile, analyzeRhythmAndStructure, analyzeStems, fingerprintOf, staleness, clearSamples, dropSamples, inferName, probeDuration, type Analysis } from "@/lib/analyze";
-import { autoTrim, foldMultiple, planRatio, spanOn, syncRate } from "@/lib/transition";
+import { autoTrim, foldMultiple, movesStems, planRatio, presetOf, shapeOfPlan, spanOn, swapsBassStem, syncRate } from "@/lib/transition";
 import { mixFeatures } from "@/lib/mix-features";
-import { DEFAULT_SMART_STYLE, planTransition, scorePlan, styleKey, styleOptions, type Evaluation, type PlannerResult, type SmartStyle } from "@/lib/transition-planner";
+import { DEFAULT_SMART_STYLE, planTransition, scorePlan, styleKey, styleOptions, withStyle, type Evaluation, type PlannerResult, type SmartStyle } from "@/lib/transition-planner";
 import { clearTracks, loadMixes, loadTracks, removeMix, removeTrack, saveMix, saveTrack } from "@/lib/storage";
 import { readTags, shrinkCover } from "@/lib/tags";
 import { toast } from "@/components/sodium/ui/toast";
+import { downloadFromLink, onDownloaded, onStemsDone, startStemJob, stemToastId, takePendingImports, useStemProgress } from "@/lib/background-jobs";
 import { makeDeck, type DeckId, type DeckState, type EffectName, type Session, type StoredMix, type StoredTrack, type Track, type TransitionPlan, type TransitionState } from "@/lib/types";
 
 const DECK_IDS = ["A", "B"] as const;
@@ -28,6 +31,12 @@ const FINISH_SECONDS = 0.2;
 const FALLBACK_SECONDS = 2;
 /** How far a tempo match may sit from a deck's own tempo before the deck takes its tempo back after a blend. */
 const MAX_KEEP_STRETCH = 0.08;
+/** Seconds an AI plan for AutoMix must leave before its out point, or it arrives too late to play as planned. */
+const AI_RUNWAY = 12;
+/** How many queued tracks after the next one the set view plans ahead. */
+const SET_AHEAD = 10;
+/** One track of the set as it will play, and the plan that takes it into the next one (null for the last). */
+export type SetEntry = { track: Track; uid: string | null; plan: TransitionPlan | null };
 /** Resolves when a media element's clock moves (its audio is running), or after a second. */
 async function audioMoving(media: HTMLMediaElement, limit = 1000) {
   const from = media.currentTime, began = performance.now();
@@ -89,10 +98,6 @@ function revokeTrack(t: Track) {
   if (t.stemsUrl) URL.revokeObjectURL(t.stemsUrl);
 }
 const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
-async function failure(res: Response) {
-  const body = await res.json().catch(() => null) as { error?: string } | null;
-  return new Error(body?.error ?? "Stem separation failed");
-}
 function downloadFile(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -105,10 +110,16 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
   const engine = useRef<DJEngine | null>(null);
   const pendingTarget = useRef<DeckId | null>(null);
   const tracksRef = useRef<Track[]>([]);
+  /** Fingerprints of files being imported right now, so the same file dropped twice at once is added once. */
+  const importingPrints = useRef(new Set<string>());
   const decksRef = useRef<Record<DeckId, DeckState>>({ A: makeDeck(), B: makeDeck() });
   const [tracks, setTracks] = useState<Track[]>([]);
   const [mixes, setMixes] = useState<StoredMix[]>([]);
   const [decks, setDecks] = useState<Record<DeckId, DeckState>>({ A: makeDeck(), B: makeDeck() });
+  /** Each deck's live playhead, for the components that show it; see DeckPositions. */
+  const [positions] = useState(() => new DeckPositions());
+  /** Starts an armed plan at its out point, from the poll (the decks state does not follow the playhead). */
+  const armedRef = useRef<() => void>(() => {});
   const [cross, setCross] = useState(0);
   const [master, setMasterState] = useState(0.9);
   const [activeDeck, setActiveDeck] = useState<DeckId>("A");
@@ -121,11 +132,10 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
   const [transition, setTransition] = useState<TransitionState | null>(null);
   /** Whether the server can run Demucs (null until asked), and each separation under way, 0..1 by track id. */
   const [stemsAvailable, setStemsAvailable] = useState<boolean | null>(null);
-  const [splitting, setSplitting] = useState<Record<string, number>>({});
-  const splitStarted = useRef(new Set<string>());
   /** Whether /api/mix has a local model through Ollama, and the pair it is planning now ("from>to"). */
   const [aiAvailable, setAiAvailable] = useState<boolean | null>(null);
   const [planning, setPlanning] = useState<string | null>(null);
+  const planningRef = useRef<string | null>(null);
   /** The library has loaded, so a saved session can be put back. */
   const [ready, setReady] = useState(false);
   /** Hot cues per track, so a track loaded again gets its cues back. */
@@ -151,7 +161,8 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
   const smartStyleRef = useRef<SmartStyle>(DEFAULT_SMART_STYLE);
   const setSmartStyle = useCallback((patch: Partial<SmartStyle>) => setSmartStyleState(prev => {
     const next = { ...prev, ...patch };
-    if (styleKey(next) === styleKey(prev)) return prev;
+    // The whole style, not only what shapes a plan: the AI and stems switches live in it too.
+    if (styleKey(next) === styleKey(prev) && next.ai === prev.ai && next.autoStems === prev.autoStems) return prev;
     // AutoMix reads the style from its own clock, before React has re-rendered: keep the ref in step at once.
     smartStyleRef.current = next;
     return next;
@@ -179,17 +190,24 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
   const [controller] = useState(() => new AutoMix(makeHost({ engine, tracks: tracksRef, decks: decksRef, ids: trackIdsRef, cross: crossRef, bridge, finish: finishRef })));
   const autoState = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   useEffect(() => { tracksRef.current = tracks; }, [tracks]);
-  useEffect(() => { decksRef.current = decks; }, [decks]);
+  // The state's position is frozen while a deck plays (see the poll), so the ref keeps the live one from the store.
+  useEffect(() => {
+    decksRef.current = { A: { ...decks.A, position: decks.A.playing ? positions.get("A") : decks.A.position },
+      B: { ...decks.B, position: decks.B.playing ? positions.get("B") : decks.B.position } };
+  }, [decks, positions]);
   useEffect(() => { savedPlansRef.current = savedPlans; }, [savedPlans]);
   useEffect(() => { smartStyleRef.current = smartStyle; }, [smartStyle]);
+  // A plan saved by hand or by the AI, or a new style, changes what AutoMix will play next: let it publish that plan.
+  useEffect(() => { controller.replan(); }, [controller, savedPlans, smartStyle]);
 
   const notify = useCallback((message: string, kind: "info" | "fail" = "info") => {
     if (kind === "fail") toast.fail(message); else toast(message);
   }, []);
   const updateDeck = useCallback((id: DeckId, patch: Partial<DeckState>) => {
     if (patch.trackId !== undefined) trackIdsRef.current[id] = patch.trackId;
+    if (patch.position !== undefined) positions.set(id, patch.position);
     setDecks(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }));
-  }, []);
+  }, [positions]);
   /** Records that a track's file could not be decoded by the current analysis, in the library and on disk. */
   const markAnalysisFailed = useCallback(async (trackId: string) => {
     const current = tracksRef.current.find(t => t.id === trackId);
@@ -239,9 +257,16 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
             if (unmapped) result.stemEnergy = await analyzeStems(track.stems!).catch(() => undefined);
             if (needsFingerprint) result.fingerprint = await fingerprintOf(track.blob).catch(() => undefined);
             if (!alive) return;
-            tracksRef.current = tracksRef.current.map(t => t.id === track.id ? { ...t, ...result } : t);
-            setTracks(prev => prev.map(t => t.id === track.id ? { ...t, ...result } : t));
-            await saveTrack({ ...toStored(track), ...result }).catch(() => {});
+            // Analysis can take long enough for the DJ to edit this track or delete it. Merge onto the latest version
+            // so saving the results keeps those edits (and the newly computed fingerprint) instead of restoring `track`.
+            const latest = tracksRef.current.find(t => t.id === track.id);
+            if (!latest) continue;
+            // A tempo the DJ set by hand is theirs: a new analysis does not replace it.
+            if (latest.tempoManual) { delete result.bpm; delete result.pulse; delete result.firstBeat; delete result.rhythm; }
+            const updated: Track = { ...latest, ...result };
+            tracksRef.current = tracksRef.current.map(t => t.id === track.id ? updated : t);
+            setTracks(prev => prev.map(t => t.id === track.id ? updated : t));
+            await saveTrack(toStored(updated)).catch(() => {});
           } catch {
             // Keep the old numbers for a file the browser cannot decode offline, and remember the failure so the next start does not decode it again.
             if (alive) await markAnalysisFailed(track.id);
@@ -257,6 +282,16 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
     const timer = window.setInterval(() => {
       const current = engine.current;
       if (!current) return;
+      // The playhead goes to the positions store and the ref, which every action reads. React state takes it only
+      // while a deck is paused (a seek, a cue): while one plays it would re-render the whole page ten times a second.
+      DECK_IDS.forEach(id => {
+        const d = decksRef.current[id]; if (!d.trackId) return;
+        const media = current.getMedia(id);
+        if (d.loopEnd !== null && d.loopStart !== null && media.currentTime >= d.loopEnd) current.seek(id, d.loopStart);
+        const pos = media.currentTime || 0;
+        positions.set(id, pos);
+        decksRef.current = { ...decksRef.current, [id]: { ...decksRef.current[id], position: pos } };
+      });
       setDecks(prev => {
         let changed = false;
         const next = { ...prev };
@@ -264,15 +299,15 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
           const d = prev[id]; if (!d.trackId) return;
           const media = current.getMedia(id);
           const dur = Number.isFinite(media.duration) ? media.duration : d.duration;
-          if (d.loopEnd !== null && d.loopStart !== null && media.currentTime >= d.loopEnd) current.seek(id, d.loopStart);
           const pos = media.currentTime || 0;
           const playing = !media.paused && !media.ended;
-          if (Math.abs(d.position - pos) > 0.06 || d.playing !== playing || Math.abs(d.duration - dur) > 0.2) {
+          if ((!playing && Math.abs(d.position - pos) > 0.06) || d.playing !== playing || Math.abs(d.duration - dur) > 0.2) {
             next[id] = { ...d, position: pos, playing, duration: dur }; changed = true;
           }
         });
         return changed ? next : prev;
       });
+      armedRef.current();
       controller.tick();
     }, 100);
     return () => {
@@ -301,7 +336,7 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
       tracksRef.current.forEach(revokeTrack);
       clearSamples();
     };
-  }, [notify, updateDeck, controller, markAnalysisFailed]);
+  }, [notify, updateDeck, controller, markAnalysisFailed, positions]);
 
   useEffect(() => {
     if (!recording) return;
@@ -331,6 +366,7 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
     engine.current.setRate(id, 1);
     (["high", "mid", "low"] as const).forEach(band => engine.current?.setEQ(id, band, 0));
     engine.current.setEffect(id, "off", 0.45);
+    engine.current.setEffectTime(id, track.bpm ? 60 / (gridBpm(track) ?? track.bpm) : null, makeDeck().fxBeats);
     const trimDb = autoTrim(track);
     engine.current.setTrim(id, trimDb);
     engine.current.setColor(id, 0);
@@ -346,7 +382,7 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
   }
   /** Everything a project keeps of the session: both decks as they stand, the mixer, plans, cues and auto mix. */
   function snapshot(): Session {
-    return { decks: decksRef.current, cross, master, activeDeck, autoMix: controller.getSnapshot().enabled, plans: savedPlansRef.current, cues: cuesRef.current, selectedTrackId, queue: controller.queue, naturalRates: naturalRates.current };
+    return { decks: decksRef.current, cross, master, activeDeck, autoMix: controller.getSnapshot().enabled, plans: savedPlansRef.current, cues: cuesRef.current, selectedTrackId, queue: controller.queue, naturalRates: naturalRates.current, smartStyle: smartStyleRef.current };
   }
   /** Puts a saved session back: each deck reloads its track paused at its position, with every control as it was. */
   function restore(session: Session) {
@@ -358,6 +394,8 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
     setSavedPlans(savedPlansRef.current);
     setSelectedTrackId(session.selectedTrackId ?? null);
     setActiveDeck(session.activeDeck ?? "A");
+    const style = { ...DEFAULT_SMART_STYLE, ...session.smartStyle };
+    smartStyleRef.current = style; setSmartStyleState(style);
     const next = { A: makeDeck(), B: makeDeck() };
     DECK_IDS.forEach(id => {
       const saved = { ...makeDeck(), ...session.decks?.[id], playing: false };
@@ -368,9 +406,11 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
       current.setRate(id, saved.rate); current.setVolume(id, saved.volume); current.setTrim(id, saved.trim); current.setColor(id, saved.color);
       (["high", "mid", "low"] as const).forEach(band => current.setEQ(id, band, saved.eq[band]));
       current.setEffect(id, saved.fx, saved.fxAmount);
+      current.setEffectTime(id, track.bpm ? 60 / (track.bpm * saved.rate) : null, saved.fxBeats);
       (saved.stems ?? makeDeck().stems).forEach((on, i) => current.setStem(id, i, on));
       next[id] = saved;
     });
+    DECK_IDS.forEach(id => positions.set(id, next[id].position));
     decksRef.current = next;
     trackIdsRef.current = { A: next.A.trackId, B: next.B.trackId };
     setDecks(next);
@@ -403,10 +443,17 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
     }
     return undefined;
   }
+  /** Downloads one track from a link on the server (yt-dlp + ffmpeg), cut to start..end when given, and imports it like a dropped file. */
+  async function importUrl(url: string, start: string, end: string): Promise<boolean> {
+    // The download lives in lib/background-jobs: leaving this page does not cancel it; the file is imported when a deck page is open.
+    return downloadFromLink(url, start, end);
+  }
   async function importFiles(files: File[]) {
     const valid = files.filter(file => /^audio\//.test(file.type) || AUDIO_EXTENSION.test(file.name));
     if (!valid.length) { notify("Choose a supported audio file.", "fail"); return; }
     setImporting(true);
+    const importToast = "import-files";
+    toast.loading(valid.length === 1 ? `Importing ${valid[0].name}` : `Importing ${valid.length} files`, { id: importToast });
     const used = new Set<DeckId>();
     const nextDeck = (): DeckId | null => {
       if (pendingTarget.current && !used.has(pendingTarget.current)) return pendingTarget.current;
@@ -414,11 +461,14 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
     };
     for (const file of valid) {
       if (file.size > MAX_FILE_BYTES) { notify(`${file.name} is larger than 150 MB.`, "fail"); continue; }
+      let added: string | undefined;
       try {
         // The same file imported twice (a second drag, another folder, another name) is one library entry: its content
         // is the identity, not its name or when it arrived. The existing track is loaded on the target deck instead.
         const fingerprint = await fingerprintOf(file).catch(() => undefined);
+        if (fingerprint && importingPrints.current.has(fingerprint)) continue;
         const existing = fingerprint ? await duplicateOf(file, fingerprint) : undefined;
+        if (fingerprint && !existing) { importingPrints.current.add(fingerprint); added = fingerprint; }
         if (existing) {
           notify(`${existing.title} is already in the library.`);
           const target = nextDeck();
@@ -442,16 +492,59 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
         const target = nextDeck();
         if (target) { loadToDeck(target, track); used.add(target); }
       } catch { notify(`Could not open ${file.name}`, "fail"); }
+      finally { if (added) importingPrints.current.delete(added); }
     }
     pendingTarget.current = null;
     setImporting(false);
+    toast.dismiss(importToast);
   }
+  /**
+   * Plays or pauses one deck by hand. A deck started on its own, with the other deck stopped and no mix running, must be
+   * heard: if the crossfader sits on the other side (where the last mix left it), it moves to this deck first, and says
+   * so. With the other deck playing the DJ is mixing by hand, so the crossfader is theirs and stays where it is; the deck
+   * then shows that it is silent and why.
+   */
   async function togglePlay(id: DeckId) {
     const current = engine.current; if (!current) return;
-    try {
-      if (current.getMedia(id).paused) await current.play(id);
-      else current.pause(id);
-    } catch { notify("This track could not be played.", "fail"); }
+    const media = current.getMedia(id);
+    if (!media.paused) { current.pause(id); return; }
+    if (!decksRef.current[id].trackId || !media.src) { notify(`Load a track on deck ${id === "A" ? 1 : 2} first.`, "fail"); return; }
+    const alone = current.getMedia(other(id)).paused && !activeMix.current;
+    if (alone && crossGains(crossRef.current)[id] < 0.5) {
+      crossfade(id === "A" ? -1 : 1);
+      notify(`Crossfader moved to deck ${id === "A" ? 1 : 2} so you can hear it.`);
+    }
+    try { await current.play(id); }
+    catch (e) {
+      notify(media.error ? "This track could not be decoded. Try loading it again." : e instanceof Error && e.name === "NotAllowedError"
+        ? "The browser blocked playback. Click play again." : "This track could not be played.", "fail");
+      return;
+    }
+    if (alone) setActiveDeck(id);
+  }
+  /** Why a playing deck is not heard, or null when it is (or while a mix owns the faders). */
+  function silentReason(id: DeckId, d: Record<DeckId, DeckState> = decks): string | null {
+    const deck = d[id];
+    // The media element, not the 10 Hz state: a mix that just ended pauses its outgoing deck a poll before the state knows.
+    if (!deck.playing || transition || engine.current?.getMedia(id).paused !== false) return null;
+    if (master < 0.02) return "Master volume is down";
+    if (deck.volume < 0.02) return "Channel fader is down";
+    if (crossGains(cross)[id] < 0.05) return `Crossfader is on deck ${id === "A" ? 2 : 1}`;
+    const track = tracks.find(t => t.id === deck.trackId);
+    if (track?.stems && deck.stems.every(on => !on)) return "Every stem is muted";
+    return null;
+  }
+  /** Brings a silent deck back: whichever control was keeping it quiet goes back to where it is heard. */
+  function makeHeard(id: DeckId) {
+    const deck = decksRef.current[id];
+    if (master < 0.02) setMaster(0.9);
+    if (deck.volume < 0.02) volume(id, 0.82);
+    if (crossGains(crossRef.current)[id] < 0.05) {
+      // Mixing by hand: the center keeps the other deck heard too. Alone: all the way to this deck.
+      const both = !engine.current?.getMedia(other(id)).paused;
+      crossfade(both ? 0 : id === "A" ? -1 : 1);
+    }
+    if (deck.stems.every(on => !on)) stems(id, [true, true, true, true]);
   }
   function cue(id: DeckId) {
     const d = decksRef.current[id]; const current = engine.current;
@@ -504,7 +597,15 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
     updateDeck(id, patch);
   }
   /** Applies a rate to a deck without making it the deck's own: a tempo match belongs to the mix, not to the DJ. */
-  function applyRate(id: DeckId, n: number) { engine.current?.setRate(id, n); updateDeck(id, { rate: n }); }
+  function applyRate(id: DeckId, n: number) { engine.current?.setRate(id, n); updateDeck(id, { rate: n }); retimeFx(id, n); }
+  /** Heard seconds per beat on a deck at a rate, or null without a tempo. */
+  function beatSeconds(id: DeckId, rate = decksRef.current[id].rate) {
+    const track = tracksRef.current.find(t => t.id === trackIdsRef.current[id]);
+    const bpm = track ? gridBpm(track) ?? track.bpm : null;
+    return bpm ? 60 / (bpm * (rate || 1)) : null;
+  }
+  /** Keeps a deck's echo, flanger and phaser on its beat as its tempo moves. */
+  function retimeFx(id: DeckId, rate?: number) { engine.current?.setEffectTime(id, beatSeconds(id, rate), decksRef.current[id].fxBeats); }
   function clearRateRamp(id: DeckId) {
     const timer = rateRamps.current[id];
     if (timer !== null) { window.clearInterval(timer); rateRamps.current[id] = null; }
@@ -604,6 +705,12 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
     updateDeck(id, { fx: effect, fxAmount: actualAmount });
   }
   function fxAmount(id: DeckId, amount: number) { fx(id, decksRef.current[id].fx, amount); }
+  /** The effect's time in beats: the echo's delay, a quarter of a flanger or phaser sweep. */
+  function fxBeats(id: DeckId, beats: number) {
+    decksRef.current = { ...decksRef.current, [id]: { ...decksRef.current[id], fxBeats: beats } };
+    updateDeck(id, { fxBeats: beats });
+    engine.current?.setEffectTime(id, beatSeconds(id), beats);
+  }
   function trim(id: DeckId, db: number) { engine.current?.setTrim(id, db); updateDeck(id, { trim: db }); }
   function color(id: DeckId, value: number) { engine.current?.setColor(id, value); updateDeck(id, { color: value }); }
   function loadSelected(id: DeckId) {
@@ -622,57 +729,44 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
    */
   async function splitStems(trackId: string) {
     const track = tracksRef.current.find(t => t.id === trackId);
-    // A ref, not the state: two clicks before the first render must not start two separations of one track.
-    if (!track || track.stems || splitStarted.current.has(trackId)) return;
-    splitStarted.current.add(trackId);
-    setSplitting(prev => ({ ...prev, [trackId]: 0 }));
-    try {
-      const start = await fetch("/api/stems", { method: "POST", body: track.blob, headers: { "x-file-name": encodeURIComponent(track.fileName) } });
-      if (!start.ok) throw await failure(start);
-      const { job } = await start.json() as { job: string };
-      for (;;) {
-        await wait(1000);
-        // The page closed, or the track was deleted, while the job ran: stop asking.
-        if (!mounted.current || !tracksRef.current.some(t => t.id === trackId)) return;
-        const res = await fetch(`/api/stems?job=${job}`);
-        if (!res.ok) throw await failure(res);
-        const status = await res.json() as { state: string; progress: number; error?: string };
-        if (status.state === "failed") throw new Error(status.error ?? "Stem separation failed");
-        setSplitting(prev => ({ ...prev, [trackId]: status.progress }));
-        if (status.state === "done") break;
-      }
-      const file = await fetch(`/api/stems?job=${job}&file=1`);
-      if (!file.ok) throw await failure(file);
-      const blob = await file.blob();
-      const latest = tracksRef.current.find(t => t.id === trackId);
-      if (!latest) return;
-      const stemEnergy = await analyzeStems(blob).catch(() => undefined);
-      // Deleted while the levels were measured: saving now would bring the track back from the dead.
-      const current = tracksRef.current.find(t => t.id === trackId);
-      if (!mounted.current || !current) return;
-      const next: Track = { ...current, stems: blob, stemsUrl: URL.createObjectURL(blob), stemEnergy };
-      tracksRef.current = tracksRef.current.map(t => t.id === trackId ? next : t);
-      setTracks(prev => prev.map(t => t.id === trackId ? next : t));
-      try { await saveTrack(toStored(next)); } catch { notify("Not enough space to keep the stems. They apply for this session only.", "fail"); }
-      let waiting = false;
-      DECK_IDS.forEach(id => {
-        const d = decksRef.current[id];
-        if (d.trackId !== trackId) return;
-        if (d.playing) { waiting = true; return; }
-        engine.current?.load(id, next.stemsUrl!, true, d.position);
-        engine.current?.setRate(id, d.rate);
-        updateDeck(id, { stems: [true, true, true, true] });
-      });
-      notify(waiting ? `Stems ready for ${latest.title}. They play the next time it loads.` : `Stems ready for ${latest.title}.`);
-    } catch (e) {
-      notify(e instanceof Error ? e.message : "Stem separation failed", "fail");
-    } finally {
-      splitStarted.current.delete(trackId);
-      setSplitting(prev => { const copy = { ...prev }; delete copy[trackId]; return copy; });
-    }
+    // The job lives in lib/background-jobs, so it keeps running (and its toast keeps following it) when this page closes.
+    if (!track || track.stems) return;
+    await startStemJob({ id: track.id, title: track.title, blob: track.blob, fileName: track.fileName });
   }
+  /** Puts a finished stems file on its track and on any paused deck holding it. Returns true when a deck is still playing it. */
+  function applyStems(trackId: string, blob: Blob, stemEnergy: StoredTrack["stemEnergy"]) {
+    const current = tracksRef.current.find(t => t.id === trackId);
+    if (!current) return;
+    const next: Track = { ...current, stems: blob, stemsUrl: URL.createObjectURL(blob), stemEnergy };
+    tracksRef.current = tracksRef.current.map(t => t.id === trackId ? next : t);
+    setTracks(prev => prev.map(t => t.id === trackId ? next : t));
+    let waiting = false;
+    DECK_IDS.forEach(id => {
+      const d = decksRef.current[id];
+      if (d.trackId !== trackId) return;
+      const inMix = activeMix.current && (activeMix.current.from === id || activeMix.current.to === id);
+      if (d.playing || inMix || !engine.current?.getMedia(id).paused) { waiting = true; return; }
+      engine.current?.load(id, next.stemsUrl!, true, d.position);
+      engine.current?.setRate(id, d.rate);
+      updateDeck(id, { stems: [true, true, true, true] });
+    });
+    if (waiting) toast.update(stemToastId(trackId), "success", `Stems ready for ${current.title}. They play the next time it loads.`);
+  }
+  const applyStemsRef = useRef(applyStems);
+  useEffect(() => { applyStemsRef.current = applyStems; });
+  const splitting = useStemProgress();
+  // Results of jobs that finished while this page was open, and downloads that finished while it was not.
+  useEffect(() => onStemsDone(d => applyStemsRef.current(d.trackId, d.blob, d.stemEnergy)), []);
+  const importFilesRef = useRef(importFiles);
+  useEffect(() => { importFilesRef.current = importFiles; });
+  useEffect(() => {
+    const waiting = takePendingImports();
+    if (waiting.length) void importFilesRef.current(waiting);
+    return onDownloaded(files => { void importFilesRef.current(files); });
+  }, []);
   /** A deck's playback position, read live from its media element, for playheads that move every frame. */
-  function mediaTime(id: DeckId) { return engine.current?.getMedia(id).currentTime ?? 0; }
+  // Stable, so the playheads that read it every frame (and the memoized countdown) do not restart on each render.
+  const mediaTime = useCallback((id: DeckId) => engine.current?.getMedia(id).currentTime ?? 0, []);
   function volume(id: DeckId, n: number) { engine.current?.setVolume(id, n); updateDeck(id, { volume: n }); }
   function crossfade(n: number) { engine.current?.setCrossfader(n); crossRef.current = n; setCross(n); }
   function setMaster(n: number) { engine.current?.setMaster(n); setMasterState(n); }
@@ -724,7 +818,7 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
     const key = `${from.id}>${to.id}|${from.analysis ?? 0}|${from.rhythm?.version ?? 0}|${from.structure?.version ?? 0}|${to.rhythm?.version ?? 0}|${to.structure?.version ?? 0}|${from.bpm}|${to.bpm}|${from.camelot}|${to.camelot}|${from.duration}|${to.duration}|${!!from.stems}|${!!to.stems}|${!!from.stemEnergy}|${!!to.stemEnergy}|${styleKey(style)}`;
     const hit = planCache.get(key);
     if (hit) return hit;
-    const made = planTransition(from, to, styleOptions(style));
+    const made = withStyle(planTransition(from, to, styleOptions(style)), from, to, style);
     planCache.set(key, made);
     if (planCache.size > 300) planCache.delete(planCache.keys().next().value!);
     return made;
@@ -745,10 +839,55 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
     if (smart && plan === smart.plan) return smart.selected;
     return scorePlan(liveTrack, nextTrack, plan, styleOptions(smartStyle));
   }, [plan, liveTrack, nextTrack, smart, smartStyle]);
+  /**
+   * The set as it will play: the track heard now, the one that follows (the other deck in a running mix, AutoMix's next
+   * pick, else the other deck), then the rest of the queue in play order. Each entry carries the plan that takes it into
+   * the next one, the same plan AutoMix will run (a saved one, else the planner's), so the transition panel can show and
+   * edit every transition of the set, not only the pair loaded on the decks.
+   */
+  const setList = useMemo(() => {
+    const byId = new Map(tracks.map(t => [t.id, t]));
+    const nowId = transition ? decks[transition.from].trackId : decks[live].trackId;
+    const first = nowId ? byId.get(nowId) : undefined;
+    if (!first) return [] as SetEntry[];
+    const entries: SetEntry[] = [{ track: first, uid: autoState.currentUid, plan: null }];
+    const nextId = transition ? decks[transition.to].trackId
+      // With AutoMix on, only what it will actually mix into; off, the track waiting on the other deck.
+      : autoState.enabled ? autoState.nextTrackId : decks[other(live)].trackId ?? autoState.nextTrackId;
+    const next = nextId ? byId.get(nextId) : undefined;
+    if (next) entries.push({ track: next, uid: autoState.nextTrackId === next.id ? autoState.nextUid : null, plan: null });
+    const q = autoState.queue, at = q.items.findIndex(i => i.uid === q.currentUid);
+    const order = [...q.items.slice(at + 1), ...(q.loop ? q.items.slice(0, Math.max(0, at)) : [])].filter(i => i.status !== "failed");
+    const after = autoState.nextUid ? order.findIndex(i => i.uid === autoState.nextUid) : -1;
+    for (const item of (after >= 0 ? order.slice(after + 1) : order).slice(0, SET_AHEAD)) {
+      const track = byId.get(item.trackId);
+      if (track) entries.push({ track, uid: item.uid, plan: null });
+    }
+    for (let i = 0; i < entries.length - 1; i++) {
+      const a = entries[i].track, b = entries[i + 1].track;
+      if (i === 0 && transition) { entries[i].plan = transition.plan; continue; }
+      try { entries[i].plan = savedPlans[`${a.id}>${b.id}`] ?? automaticFor(a, b, smartStyle); } catch { entries[i].plan = null; }
+    }
+    return entries;
+    // automaticFor reads the plan cache; the style and saved plans it depends on are listed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tracks, decks.A.trackId, decks.B.trackId, live, transition, autoState.enabled, autoState.nextTrackId, autoState.nextUid, autoState.currentUid, autoState.queue, savedPlans, smartStyle]);
+  /** Rates any plan of the set against the planner's criteria, so the panel can score a transition further down the queue. */
+  // Stable: it reads only refs, so a memo keyed on it reruns when the plan changes, not on every 10 Hz render.
+  const ratePlan = useCallback((next: TransitionPlan): Evaluation | null => {
+    const a = tracksRef.current.find(t => t.id === next.fromId), b = tracksRef.current.find(t => t.id === next.toId);
+    if (!a || !b) return null;
+    try { return scorePlan(a, b, next, styleOptions(smartStyleRef.current)); } catch { return null; }
+  }, []);
   function savePlan(next: TransitionPlan) {
     savedPlansRef.current = { ...savedPlansRef.current, [`${next.fromId}>${next.toId}`]: next };
     setSavedPlans(savedPlansRef.current);
     failedMix.current = null;
+  }
+  /** Makes a transition's shape (curves, eq, effect, stems) the one AutoMix gives every transition it plans. */
+  function saveAsTemplate(next: TransitionPlan) {
+    setSmartStyle({ template: shapeOfPlan(next) });
+    notify("AutoMix will use this transition's shape. Clear it in the AutoMix settings.");
   }
   function resetPlan(fromId: string, toId: string) {
     const copy = { ...savedPlansRef.current };
@@ -757,24 +896,86 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
     setSavedPlans(copy);
     failedMix.current = null;
   }
-  /** Asks the local model, through /api/mix, for the transition between the live track and the next one, and keeps its plan. */
-  async function aiPlan() {
-    if (!liveTrack || !nextTrack || !automatic) return;
-    const key = `${liveTrack.id}>${nextTrack.id}`;
-    if (planning) return;
-    setPlanning(key);
+  /**
+   * Asks the local model, through /api/mix, for the transition between two tracks, and keeps its plan. By hand it plans
+   * the live pair and says so. For AutoMix (quiet) it never replaces a plan the DJ saved meanwhile, and it drops a plan
+   * that would start too soon to play as planned (the automatic one plays instead), so a slow answer cannot jolt a set.
+   */
+  async function aiPlanFor(from: Track, to: Track, quiet = false): Promise<boolean> {
+    const key = `${from.id}>${to.id}`;
+    if (planningRef.current) return false;
+    const base = savedPlansRef.current[key] ?? automaticFor(from, to);
+    planningRef.current = key; setPlanning(key);
+    // By hand the person is waiting on the model: a toast stays until the plan is ready. AutoMix plans quietly.
+    const jobToast = quiet ? undefined : `ai-plan-${key}`;
+    let planSettled = false;
+    if (jobToast) toast.loading(`AI is planning ${from.title} into ${to.title}`, { id: jobToast });
     try {
       const res = await fetch("/api/mix", { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ from: mixFeatures(liveTrack), to: mixFeatures(nextTrack), auto: automatic }) });
+        body: JSON.stringify({ from: mixFeatures(from), to: mixFeatures(to), auto: base }) });
       const body = await res.json() as { plan?: Omit<TransitionPlan, "fromId" | "toId" | "preset" | "by">; error?: string };
       if (!res.ok || !body.plan) throw new Error(body.error ?? "The AI plan failed");
+      if (!mounted.current) return false;
       // The planner's own fields describe its plan, not the model's: the AI plan is matched as before and rated afresh.
-      savePlan({ ...automatic, ...body.plan, strategy: undefined, score: undefined, confidence: undefined, sync: undefined,
-        fromId: liveTrack.id, toId: nextTrack.id, preset: "custom", by: "ai" });
-      notify("AI transition ready. Preview it or mix now.");
-    } catch (e) { notify(e instanceof Error ? e.message : "The AI plan failed", "fail"); }
-    finally { setPlanning(null); }
+      const next: TransitionPlan = { ...base, ...body.plan, strategy: undefined, score: undefined, confidence: undefined, sync: undefined,
+        fromId: from.id, toId: to.id, preset: "custom", by: "ai" };
+      next.preset = presetOf(next);
+      if (quiet) {
+        if (savedPlansRef.current[key]) return false;
+        const deck = DECK_IDS.find(id => trackIdsRef.current[id] === from.id);
+        const media = deck ? engine.current?.getMedia(deck) : null;
+        const lead = AI_RUNWAY * (media?.playbackRate || 1);
+        if (activeMix.current || (media && !media.paused && media.currentTime > next.outAt - lead)) return false;
+      }
+      savePlan(next);
+      if (jobToast) { planSettled = true; toast.update(jobToast, "success", "AI transition ready. Preview it or mix now."); } else notify(`AI planned ${from.title} into ${to.title}.`);
+      return true;
+    } catch (e) {
+      if (jobToast) { planSettled = true; toast.update(jobToast, "fail", e instanceof Error ? e.message : "The AI plan failed"); }
+      return false;
+    } finally {
+      // Returned early (quiet drop, unmounted): never leave the loading toast behind.
+      if (jobToast && !planSettled) toast.dismiss(jobToast);
+      planningRef.current = null; setPlanning(null);
+    }
   }
+  /** The AI plan for any pair of the set, by hand; with no pair, the one between the decks. */
+  async function aiPlan(pair?: { fromId: string; toId: string }) {
+    const a = pair ? tracksRef.current.find(t => t.id === pair.fromId) : liveTrack;
+    const b = pair ? tracksRef.current.find(t => t.id === pair.toId) : nextTrack;
+    if (a && b) await aiPlanFor(a, b);
+  }
+  /* AutoMix with AI on: each pair it is about to play gets a plan from the local model, once, in the background. Until
+     the answer comes (or if it never does), the planner's plan stands; a plan the DJ edited is never asked about. */
+  const aiTried = useRef(new Set<string>());
+  const autoPair = autoState.plan ? `${autoState.plan.fromId}>${autoState.plan.toId}` : null;
+  useEffect(() => {
+    if (!smartStyle.ai || !aiAvailable || !autoState.enabled || !autoPair || planning || transition) return;
+    if (savedPlansRef.current[autoPair] || aiTried.current.has(autoPair)) return;
+    const [fromId, toId] = autoPair.split(">");
+    const from = tracksRef.current.find(t => t.id === fromId), to = tracksRef.current.find(t => t.id === toId);
+    if (!from?.bpm || !to?.bpm) return;
+    aiTried.current.add(autoPair);
+    void aiPlanFor(from, to, true);
+    // aiPlanFor reads refs and the latest state; the pair, the switches and what is in flight decide when it runs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [smartStyle.ai, aiAvailable, autoState.enabled, autoPair, planning, transition]);
+  /* AutoMix with auto stems on: Demucs splits what is about to play, one track at a time (the server runs one job at a
+     time anyway): the next track first, then the one playing, then the rest of the queue in order. A track whose split
+     failed is not tried again this session. */
+  const stemsTried = useRef(new Set<string>());
+  const splittingNow = Object.keys(splitting).length > 0;
+  useEffect(() => {
+    if (!smartStyle.autoStems || !stemsAvailable || !autoState.enabled || splittingNow) return;
+    const q = autoState.queue, at = q.items.findIndex(i => i.uid === q.currentUid);
+    const order = [autoState.nextTrackId, trackIdsRef.current[live], ...q.items.slice(at + 1).map(i => i.trackId), ...(q.loop ? q.items.slice(0, Math.max(0, at)).map(i => i.trackId) : [])];
+    const target = order.map(id => id && tracksRef.current.find(t => t.id === id)).find((t): t is Track => !!t && !t.stems && !stemsTried.current.has(t.id));
+    if (!target) return;
+    stemsTried.current.add(target.id);
+    void splitStems(target.id);
+    // splitStems reads refs; the queue, the next pick and the switches decide what to split next.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [smartStyle.autoStems, stemsAvailable, autoState.enabled, autoState.queue, autoState.nextTrackId, splittingNow, tracks, live]);
 
   /** Loads a track on a deck for AutoMix and waits until the browser can play it. A newer load of the same deck replaces it. */
   async function prepareDeck(id: DeckId, track: Track, at: number) {
@@ -863,7 +1064,7 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
     const matchRate = gridded ? planRatio(plan, fromTrack, toTrack, fromRate, toRate) * fromRate : toRate;
     const synced = gridded && (current.pitchLock || Math.abs(matchRate - 1) <= UNLOCKED_MAX_RATE_DEVIATION);
     if (gridded && !synced && !opts.quiet) notify("This browser cannot keep pitch when the tempo changes, so this blend is not beat-matched.");
-    const run: TransitionPlan = gridded && !synced ? { ...plan, bars: Math.min(plan.bars, 4) } : plan;
+    let run: TransitionPlan = gridded && !synced ? { ...plan, bars: Math.min(plan.bars, 4) } : plan;
     const span = spanOn(fromTrack, run.bars);
     // Unmatched, the incoming deck plays at its own tempo: a rate left over from an earlier match is given back here,
     // while the deck is still silent, so the blend never starts on a stretched track that was not matched on purpose.
@@ -930,8 +1131,11 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
     // A vocal handover only moves stems the DJ left on; a muted stem stays muted (the lane multiplies the stem's own gain).
     // It needs the stems file on both decks right now: a deck that was loaded before its track was separated plays the
     // full mix, where the vocals lane has nothing to move.
-    const handover = run.stems === "vocals" && current.stemMode(from) && current.stemMode(to);
-    const session = current.scheduleMix({ from, to, plan: run, start, duration: span / rateOut, outStart, handover });
+    const handover = movesStems(run.stems) && current.stemMode(from) && current.stemMode(to);
+    // A stem move that cannot run (a deck plays the full mix) still keeps two bass lines apart: on the eq instead.
+    if (!handover && swapsBassStem(run.stems) && run.eq === "none") run = { ...run, eq: "bass" };
+    const session = current.scheduleMix({ from, to, plan: run, start, duration: span / rateOut, outStart, handover,
+      beat: fromBpm ? 60 / fromBpm / rateOut : undefined });
 
     let shown = -1, lastRateOut = rateOut, lastBase = base.rate, offClock = 0, fellBack = false, finishing = false;
     const complete = () => {
@@ -1057,15 +1261,17 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
       abort: () => { cancelMix({ silent: true }); },
     };
   });
-  // The plan starts on its own at plan.outAt when auto mix is on or a preview armed it.
-  useEffect(() => {
+  // The plan starts on its own at plan.outAt when auto mix is on or a preview armed it. The poll runs this check, with
+  // the live playhead from the ref: the decks state does not follow a playing deck.
+  useEffect(() => { armedRef.current = () => {
     const run = armed;
     if (!run || transition || mixing.current || failedMix.current === `${run.fromId}>${run.toId}`) return;
-    const from: DeckId = decks.A.trackId === run.fromId ? "A" : "B";
-    const d = decks[from], o = decks[other(from)];
+    const live = decksRef.current;
+    const from: DeckId = live.A.trackId === run.fromId ? "A" : "B";
+    const d = live[from], o = live[other(from)];
     if (!d.playing || o.playing || d.trackId !== run.fromId || o.trackId !== run.toId) return;
     if (d.position >= run.outAt - prerollNow() - 0.25 && d.position < run.outAt + 2) mixRef.current(run, false);
-  });
+  }; });
   /**
    * AutoMix reaches "ready" a whole preroll before the out point, so one timeout wakes the controller exactly then,
    * instead of the 100 ms poll noticing up to a tenth of a second late. The blend itself is written to the audio thread
@@ -1168,13 +1374,23 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
     await clearTracks().catch(() => {});
   }
   /** Edits text tags and cover. `cover: null` removes the picture; omitting it keeps the current one. */
-  async function updateTrack(id: string, patch: { title: string; artist: string; album: string; year: string; genre: string; cover?: Blob | null }) {
+  /** `tempo`: a bpm and first beat set by hand (they become a steady grid), or "detect" to go back to the analysis. */
+  async function updateTrack(id: string, patch: { title: string; artist: string; album: string; year: string; genre: string; cover?: Blob | null; tempo?: { bpm: number; firstBeat: number } | "detect" }) {
     const current = tracksRef.current.find(t => t.id === id); if (!current) return;
     const cover = patch.cover === undefined ? current.cover : patch.cover ? await shrinkCover(patch.cover) : undefined;
     const text = (v: string) => v.trim() || undefined;
+    let tempo: Partial<Track> = {};
+    if (patch.tempo === "detect") {
+      try {
+        const found = await analyzeFile(current.blob);
+        tempo = { bpm: found.bpm, pulse: found.pulse, firstBeat: found.firstBeat, rhythm: found.rhythm, tempoManual: undefined };
+      } catch { notify("Could not analyze this file again.", "fail"); }
+    } else if (patch.tempo) {
+      tempo = { bpm: patch.tempo.bpm, firstBeat: patch.tempo.firstBeat, rhythm: gridFromTempo(patch.tempo.bpm, patch.tempo.firstBeat, current.duration), tempoManual: true };
+    }
     const next: Track = {
       ...current, title: patch.title.trim() || current.title, artist: patch.artist.trim() || current.artist,
-      album: text(patch.album), year: text(patch.year), genre: text(patch.genre), cover,
+      album: text(patch.album), year: text(patch.year), genre: text(patch.genre), cover, ...tempo,
       coverUrl: cover === current.cover ? current.coverUrl : cover ? URL.createObjectURL(cover) : undefined,
     };
     if (current.coverUrl && next.coverUrl !== current.coverUrl) URL.revokeObjectURL(current.coverUrl);
@@ -1211,12 +1427,13 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
 
   // The knobs show the DJ's settings plus what a running transition does on its own lanes.
   const shownDecks = useMemo(() => transition ? overlayMix(decks, transition) : decks, [decks, transition]);
+  const silent: Record<DeckId, string | null> = { A: silentReason("A"), B: silentReason("B") };
   return {
-    tracks, mixes, decks: shownDecks, trackA, trackB, cross, master, activeDeck, recording, recordSeconds, importing, mixName, selectedTrackId, transition, mix: (next: TransitionPlan, now = false) => mix(next, now), cancelMix: () => cancelMix(), preview, plan, live, liveTrack, nextTrack, savePlan, resetPlan, armed, smart, planScore, smartStyle, setSmartStyle, autoMix: autoState.enabled, setAutoMix, auto, queue, matchGain, alignPhase,
-    setActiveDeck, setMixName, setSelectedTrackId, level, output, loadSelected, clearPad, loopIn, loopOut, beatLoop, resizeLoop, trim, color, browse, importFiles, loadToDeck, togglePlay, cue, nudge, skipBeats, seek, pad,
-    toggleLoop, setLoopBeats, setRate, sync, eq, fx, fxAmount, volume, crossfade, setMaster, toggleRecord,
+    tracks, mixes, decks: shownDecks, trackA, trackB, cross, master, activeDeck, recording, recordSeconds, importing, mixName, selectedTrackId, transition, mix: (next: TransitionPlan, now = false) => mix(next, now), cancelMix: () => cancelMix(), preview, plan, live, liveTrack, nextTrack, savePlan, resetPlan, saveAsTemplate, armed, smart, planScore, smartStyle, setSmartStyle, autoMix: autoState.enabled, setAutoMix, auto, queue, matchGain, alignPhase,
+    setActiveDeck, setMixName, setSelectedTrackId, level, output, loadSelected, clearPad, loopIn, loopOut, beatLoop, resizeLoop, trim, color, browse, importFiles, importUrl, loadToDeck, togglePlay, cue, nudge, skipBeats, seek, pad,
+    toggleLoop, setLoopBeats, setRate, sync, eq, fx, fxAmount, fxBeats, volume, crossfade, setMaster, toggleRecord, silent, makeHeard, setList, ratePlan,
     stemsAvailable, splitting, stems, toggleStem, splitStems, aiAvailable, planning, aiPlan, ready, snapshot, restore, adoptTracks, adoptMixes,
-    deleteTrack, updateTrack, clearLibrary, deleteMix, exportMix, mediaTime,
+    deleteTrack, updateTrack, clearLibrary, deleteMix, exportMix, mediaTime, positions,
   };
 }
 

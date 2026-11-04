@@ -103,6 +103,8 @@ export class AutoMix {
   private inflight = new Set<Promise<void>>();
   private prepared: Prepared | null = null;
   private pinned: { deck: DeckId; trackId: string } | null = null;
+  /** The track AutoMix itself last put on a deck, so a track it left there is not mistaken for one the DJ cued. */
+  private loaded: { deck: DeckId; trackId: string } | null = null;
   private lastOut: string | null = null;
   private skipRequested = false;
   private pauseAfterMix = false;
@@ -167,6 +169,11 @@ export class AutoMix {
     if (this.phase !== "idle" && this.phase !== "error") return false;
     this.q = retryFailed(this.q);
     this.failures = 0; this.lastOut = null; this.skipped.clear();
+    // A track already cued on the other deck is the DJ's pick, as if it had been loaded by hand with AutoMix running:
+    // it plays next, ahead of what the queue would choose.
+    const live = this.host.liveDeck(), idle = this.host.deck(other(live)).trackId;
+    const mine = this.loaded?.deck === other(live) && this.loaded.trackId === idle;
+    this.pinned = idle && idle !== this.host.deck(live).trackId && !mine ? { deck: other(live), trackId: idle } : null;
     this.epoch++;
     if (this.phase === "error") this.phase = "idle";
     this.go("analyzing", "Looking for the next track");
@@ -281,6 +288,7 @@ export class AutoMix {
     if (this.phase === "idle" || this.phase === "error" || this.phase === "mixing") return;
     // Loading it by hand is a fresh start for a track that failed before.
     this.skipped.delete(trackId);
+    if (this.loaded?.deck === deck) this.loaded = null;
     if (deck === this.host.liveDeck()) { this.pinned = null; this.lastOut = null; }
     else this.pinned = { deck, trackId };
     this.invalidate();
@@ -347,6 +355,9 @@ export class AutoMix {
   /* ── clock ───────────────────────────────────────────────────────────────────────────────────────────────────── */
 
   /** Called about ten times a second: starts the mix when the out point comes, and notices a track that ended. */
+  /** The plan for the next pair changed outside AutoMix (an edit, an AI plan, a new style): publish it again, so the
+      panel and the wake-up timer read the plan that will play. */
+  replan() { this.emit(); }
   tick() {
     if (!WORKING.includes(this.phase) || this.launching) return;
     const live = this.host.liveDeck(), cur = this.host.deck(live), cd = this.host.deck(other(live));
@@ -421,7 +432,11 @@ export class AutoMix {
   private pick(): Pick | null {
     const live = this.host.liveDeck(), od = this.host.deck(other(live)), cur = this.host.deck(live);
     if (this.pinned) {
-      if (od.trackId === this.pinned.trackId && this.pinned.deck === other(live)) return { source: "manual", uid: null, trackId: this.pinned.trackId };
+      // Where the pick is also the queue's own next entry, it is that entry, so the queue moves on and does not repeat it.
+      if (od.trackId === this.pinned.trackId && this.pinned.deck === other(live)) {
+        const queued = nextItem(this.q);
+        return queued?.trackId === this.pinned.trackId ? { source: "queue", uid: queued.uid, trackId: queued.trackId } : { source: "manual", uid: null, trackId: this.pinned.trackId };
+      }
       this.pinned = null;
     }
     const item = nextItem(this.q);
@@ -489,6 +504,7 @@ export class AutoMix {
 
     this.go("preparing", `Loading ${next.title}`);
     const plan = this.host.planFor(curTrack, next);
+    this.loaded = { deck: nextDeck, trackId: next.id };
     try { await this.host.prepare(nextDeck, next, Math.max(0, plan.inAt - 2)); } catch (e) { if (!this.stale(epoch)) this.recover(pick, e); return; }
     if (this.stale(epoch)) return;
     this.prepared = { ...pick, deck: nextDeck, fromTrackId: curTrack.id };

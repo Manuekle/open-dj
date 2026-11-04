@@ -1,4 +1,4 @@
-import { effectAt, effectUsesColor, lowAt } from "@/lib/transition";
+import { effectOf, effectUsesColor, lowOf } from "@/lib/transition";
 import type { DeckId, DeckState, TransitionState } from "@/lib/types";
 
 /* What the knobs show while a transition runs. The audio does not go through the knobs: a transition drives its own lanes
@@ -10,7 +10,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 
 export function overlayMix(decks: Record<DeckId, DeckState>, mix: TransitionState): Record<DeckId, DeckState> {
   const { plan, progress, from, to } = mix;
-  const low = lowAt(plan.eq, progress), e = effectAt(plan.effect, progress), colored = effectUsesColor(plan.effect);
+  const low = lowOf(plan, progress), e = effectOf(plan, progress), colored = effectUsesColor(plan.effect);
   const next = { ...decks };
   for (const [id, lowDb, color] of [[from, low.out, e.outColor], [to, low.in, e.inColor]] as [DeckId, number, number][]) {
     const d = decks[id];

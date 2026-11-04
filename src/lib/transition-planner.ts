@@ -1,10 +1,10 @@
 import { ANALYSIS_VERSION } from "@/lib/analyze";
 import { gridBpm } from "@/lib/grid";
 import {
-  HARMONY_LABEL, autoTrim, barOf, bassOver, bodyEnd, foldMultiple, harmony, mainEntry, mainStart, meanDb, outroStart, snapToBar, spanOn,
-  tempoGap, vocalsOver, type Harmony,
+  HARMONY_LABEL, autoTrim, barOf, bassOver, bodyEnd, foldMultiple, handsVocals, harmony, mainEntry, mainStart, meanDb, movesStems, outroStart,
+  overlapShare, presetOf, snapToBar, spanOn, swapsBassStem, tempoGap, vocalsOver, type Harmony,
 } from "@/lib/transition";
-import { formatTime, type Track, type TransitionEffect, type TransitionEq, type TransitionPlan, type TransitionStems, type TransitionStrategy, type VolumeCurve } from "@/lib/types";
+import { formatTime, type CustomCurve, type Track, type TransitionEffect, type TransitionEq, type TransitionPlan, type TransitionShape, type TransitionStems, type TransitionStrategy, type VolumeCurve } from "@/lib/types";
 
 /* Smart AutoMix's transition planner. For a pair of tracks it builds candidate transitions (a strategy, a length, an out
    point and an in point), scores each from 0 to 100 against the analysis, and picks one.
@@ -60,8 +60,9 @@ export const WEAK_PULSE = 4;
 const BASS_FLOOR = -6, VOCALS_SHARE = 0.3;
 /** Tempo change at which an unsynced plan's tempo score reaches 0: the jump is heard at the cut, not stretched. */
 const UNSYNCED_TOLERANCE = 0.3;
-/** Share of a transition's length both sides play near full level, by volume curve. */
-const OVERLAP_SHARE: Record<VolumeCurve, number> = { smooth: 0.5, overlap: 0.75, fade: 0.2 };
+/** Share of a transition's length both sides play near full level, by volume curve; other curves are measured. */
+const OVERLAP_SHARE: Partial<Record<VolumeCurve, number>> = { smooth: 0.5, overlap: 0.75, fade: 0.2 };
+const shareOf = (shape: Pick<Shape, "volume" | "curve" | "eqAt">) => OVERLAP_SHARE[shape.volume] ?? overlapShare(shape);
 
 /* ── what the planner knows about a pair ─────────────────────────────────────────────────────────────────────────── */
 
@@ -160,14 +161,67 @@ export type PlannerOptions = {
 };
 const DEFAULTS = { minScore: 45, minConfidence: 0.3 };
 
-/** The DJ's settings for Smart AutoMix, as the interface holds them: "auto" leaves the choice to the planner. */
-export type SmartStyle = { strategy: TransitionStrategy | "auto"; bars: number | "auto"; tempo: TempoMatching; energy: EnergyFlow };
-export const DEFAULT_SMART_STYLE: SmartStyle = { strategy: "auto", bars: "auto", tempo: "standard", energy: "auto" };
+/** The DJ's settings for Smart AutoMix, as the interface holds them: "auto" leaves the choice to the planner.
+    volume, eq, effect and stems override what the planner's strategy picks; template is a whole transition shape the DJ
+    saved from the transition editor, applied to every planned transition (its fields lose to the explicit overrides). */
+export type SmartStyle = {
+  strategy: TransitionStrategy | "auto"; bars: number | "auto"; tempo: TempoMatching; energy: EnergyFlow;
+  volume?: Exclude<VolumeCurve, "custom"> | "auto"; eq?: TransitionEq | "auto"; effect?: TransitionEffect | "auto"; stems?: TransitionStems | "auto";
+  intensity?: number;
+  template?: TransitionShape | null;
+  /** AutoMix asks the local AI model for each pair it is about to play. Does not change the planner's own plans. */
+  ai?: boolean;
+  /** AutoMix splits the tracks it is about to play into stems with Demucs, so stem moves can run. */
+  autoStems?: boolean;
+};
+export const DEFAULT_SMART_STYLE: SmartStyle = { strategy: "auto", bars: "auto", tempo: "standard", energy: "auto", volume: "auto", eq: "auto", effect: "auto", stems: "auto", template: null, ai: false, autoStems: false };
 export const styleOptions = (style: SmartStyle): PlannerOptions => ({
   strategy: style.strategy, bars: style.bars === "auto" ? undefined : style.bars, tempo: style.tempo, energy: style.energy,
 });
 /** A key for caching plans by style. */
-export const styleKey = (s: SmartStyle) => `${s.strategy}/${s.bars}/${s.tempo}/${s.energy}`;
+export const styleKey = (s: SmartStyle) => `${s.strategy}/${s.bars}/${s.tempo}/${s.energy}/${s.volume ?? "auto"}/${s.eq ?? "auto"}/${s.effect ?? "auto"}/${s.stems ?? "auto"}/${s.intensity ?? 1}/${s.template ? JSON.stringify(s.template) : ""}`;
+/** Whether a style changes anything about the planner's shapes. */
+export const styleShapes = (s: SmartStyle) => !!s.template || [s.volume, s.eq, s.effect, s.stems].some(v => v && v !== "auto") || (s.intensity ?? 1) !== 1;
+
+const EQ_WORD: Record<TransitionEq, string> = { none: "no eq move", bass: "a bass swap", gradual: "a gradual low cut" };
+/**
+ * The planner's result with the DJ's AutoMix style laid over its shape: the saved template first, then each explicit
+ * override. Where the plan sits (out and in points, length, tempo sync) stays the planner's. A stem move needs stems on
+ * both tracks; without them the bass part of it falls back to an eq bass swap. The plan is rated again as it now stands.
+ */
+export function withStyle(result: PlannerResult, from: Track, to: Track, style: SmartStyle): PlannerResult {
+  if (!styleShapes(style)) return result;
+  const base = result.plan, said: string[] = [];
+  const next: TransitionPlan = { ...base };
+  const t = style.template;
+  if (t) {
+    Object.assign(next, { volume: t.volume, eq: t.eq, effect: t.effect, curve: t.curve, eqAt: t.eqAt, intensity: t.intensity, echoBeats: t.echoBeats });
+    if (t.stems !== undefined) next.stems = t.stems;
+    said.push("Your saved transition template sets the curves, eq, effect and stems.");
+  }
+  if (style.volume && style.volume !== "auto") { next.volume = style.volume; next.curve = undefined; }
+  if (style.eq && style.eq !== "auto") next.eq = style.eq;
+  if (style.effect && style.effect !== "auto") next.effect = style.effect;
+  if (style.stems && style.stems !== "auto") next.stems = style.stems;
+  if (style.intensity !== undefined && style.intensity !== 1) next.intensity = style.intensity;
+  const stemmed = !!from.stems && !!to.stems;
+  if (movesStems(next.stems) && !stemmed) {
+    if (swapsBassStem(next.stems) && next.eq === "none") next.eq = "bass";
+    said.push("Stem moves need both tracks split into stems; until then the bass swaps on the eq.");
+    next.stems = "none";
+  }
+  // A cut or a short blend has no room for a vocal handover's gap.
+  if (handsVocals(next.stems) && next.bars < 4) next.stems = "none";
+  if (!t) said.push(`Your AutoMix style sets ${[style.volume && style.volume !== "auto" ? `the ${style.volume} curve` : null,
+    style.eq && style.eq !== "auto" ? EQ_WORD[style.eq] : null, style.effect && style.effect !== "auto" ? `the ${style.effect} effect` : null,
+    style.stems && style.stems !== "auto" ? `stems: ${style.stems}` : null, (style.intensity ?? 1) !== 1 ? `effect intensity ${Math.round((style.intensity ?? 1) * 100)}%` : null]
+    .filter(Boolean).join(", ") || "the shape"}.`);
+  next.preset = presetOf(next);
+  const evaluation = scorePlan(from, to, next, styleOptions(style));
+  const notes = base.notes ?? [];
+  const plan: TransitionPlan = { ...next, score: evaluation.score, confidence: evaluation.confidence, notes: [notes[0], ...said, ...notes.slice(1)].filter(Boolean) };
+  return { ...result, plan, score: evaluation.score, selected: { ...result.selected, ...evaluation, plan } };
+}
 
 export function weightsOf(partial?: Partial<PlannerWeights>): PlannerWeights {
   const out = { ...DEFAULT_WEIGHTS };
@@ -244,7 +298,7 @@ export function overlapOf(pair: Pair, outAt: number, inAt: number, bars: number)
 
 /* ── what each strategy does over a given stretch ───────────────────────────────────────────────────────────────── */
 
-export type Shape = { volume: VolumeCurve; eq: TransitionEq; effect: TransitionEffect; stems: TransitionStems; sync: boolean; why: string[] };
+export type Shape = { volume: VolumeCurve; curve?: CustomCurve; eqAt?: number; eq: TransitionEq; effect: TransitionEffect; stems: TransitionStems; sync: boolean; why: string[] };
 
 const bothBass = (o: Overlap) => o.bassOut !== null && o.bassIn !== null && o.bassOut > BASS_FLOOR && o.bassIn > BASS_FLOOR;
 const bothSing = (o: Overlap) => o.vocalsOut !== null && o.vocalsIn !== null && o.vocalsOut > VOCALS_SHARE && o.vocalsIn > VOCALS_SHARE;
@@ -394,7 +448,9 @@ function bassOf(_: Context, p: Placed): Raw {
   const levels = `${bassOut.toFixed(1)} and ${bassIn.toFixed(1)} dB against their medians`;
   if (!bothBass(p.overlap)) return ok(1, `One side has little bass in the overlap (${levels}), so the lows can cross.`);
   if (p.shape.eq === "bass") return ok(1, `Both carry bass through the overlap (${levels}), so the lows swap at the middle.`);
-  const stacked = p.bars * OVERLAP_SHARE[p.shape.volume];
+  if (swapsBassStem(p.shape.stems)) return ok(1, `Both carry bass through the overlap (${levels}), so the bass stems swap.`);
+  if (p.shape.eq === "gradual") return ok(0.85, `Both carry bass through the overlap (${levels}); the lows ease across, so a little of them stacks.`);
+  const stacked = p.bars * shareOf(p.shape);
   return ok(1 - stacked / 4, `Both carry bass (${levels}) and nothing swaps it: about ${stacked.toFixed(1)} bars of stacked low end.`);
 }
 
@@ -403,8 +459,9 @@ function vocalsOf({ pair }: Context, p: Placed): Raw {
   const { vocalsOut, vocalsIn } = p.overlap;
   if (vocalsOut === null || vocalsIn === null) return missing("No vocal levels for the overlap.");
   if (!bothSing(p.overlap)) return ok(1, "At most one side sings across the overlap.");
-  if (p.shape.stems === "vocals") return ok(1, "Both sing across the overlap, and the vocals hand over.");
-  const stacked = p.bars * OVERLAP_SHARE[p.shape.volume];
+  if (handsVocals(p.shape.stems)) return ok(1, "Both sing across the overlap, and the vocals hand over.");
+  if (p.shape.stems === "acapella") return ok(1, "Both sing across the overlap; the incoming vocals wait until the old acapella is done.");
+  const stacked = p.bars * shareOf(p.shape);
   return ok(1 - stacked / 4, `Both sing across the overlap (${pct(vocalsOut)} and ${pct(vocalsIn)} of it): about ${stacked.toFixed(1)} bars of two voices.`);
 }
 
@@ -654,6 +711,6 @@ export function scorePlan(from: Track, to: Track, plan: TransitionPlan, options:
   const pair = pairOf(from, to);
   const ctx: Context = { pair, weights: weightsOf(options.weights), tempo: options.tempo ?? "standard", energy: options.energy ?? "auto" };
   const overlap = overlapOf(pair, plan.outAt, plan.inAt, plan.bars);
-  const shape: Shape = { volume: plan.volume, eq: plan.eq, effect: plan.effect, stems: plan.stems ?? "none", sync: plan.sync !== false && pair.gap !== null && ctx.tempo !== "off", why: [] };
+  const shape: Shape = { volume: plan.volume, curve: plan.curve, eqAt: plan.eqAt, eq: plan.eq, effect: plan.effect, stems: plan.stems ?? "none", sync: plan.sync !== false && pair.gap !== null && ctx.tempo !== "off", why: [] };
   return evaluate(ctx, strategyOf(plan, pair), { bars: plan.bars, outAt: plan.outAt, inAt: plan.inAt, overlap, shape });
 }

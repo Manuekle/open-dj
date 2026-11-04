@@ -30,6 +30,8 @@ export type Scenario = {
   /** The deck that goes out. */
   from?: "A" | "B";
   handover?: boolean;
+  /** Context seconds per beat of the outgoing track. */
+  beat?: number;
   /** Things done to the graph while it renders, at context times (rounded to a render block). */
   actions?: { at: number; run: (h: Harness) => void }[];
 };
@@ -52,7 +54,7 @@ export async function renderMix(Offline: OfflineCtor, s: Scenario) {
   A.cross.gain.value = rest.A; B.cross.gain.value = rest.B;
   graph[to].mix.volume.gain.value = 0; // the incoming deck is silenced for its preroll
   const spec = (over: Partial<MixSpec> = {}): MixSpec => ({
-    plan: s.plan, from: graph[from], to: graph[to], start: s.start, duration: s.duration, outStart: rest[from], handover: !!s.handover,
+    plan: s.plan, from: graph[from], to: graph[to], start: s.start, duration: s.duration, outStart: rest[from], handover: !!s.handover, beat: s.beat,
     rest: { from: rest[from], to: rest[to] }, final: { from: final[from], to: final[to] }, ...over,
   });
   const session = new MixSession(ctx, spec());

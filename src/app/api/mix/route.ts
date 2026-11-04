@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { MixFeatures } from "@/lib/mix-features";
 import type { TransitionPlan } from "@/lib/types";
+import { EFFECT_OPTIONS, EQ_OPTIONS, STEM_OPTIONS, VOLUME_OPTIONS } from "@/lib/transition-options";
 
 /* The AI transition planner, on a local model through Ollama (https://ollama.com): nothing leaves the machine.
    POST { from, to, auto }: two tracks' analysis (lib/mix-features) and the automatic plan. The model answers where the
@@ -14,37 +15,51 @@ const OLLAMA = (process.env.OLLAMA_URL ?? "http://127.0.0.1:11434").replace(/\/$
 const MODEL = process.env.OLLAMA_MODEL ?? "qwen2.5:7b";
 /** A first answer loads the model into memory, which can take a while on a laptop. */
 const TIMEOUT_MS = 300_000;
-const BARS = [1, 2, 4, 8, 16] as const;
+const BARS = [1, 2, 4, 8, 16, 32] as const;
+const VOLUMES = ["smooth", "linear", "scurve", "overlap", "early", "late", "fade", "cut"] as const;
+const EQS = ["none", "bass", "gradual"] as const;
+const EFFECTS = ["none", "lowpass", "hpout", "rise", "lpin", "swap", "echo", "dub", "reverb", "flanger"] as const;
+const STEMS = ["none", "vocals", "bass", "drums", "acapella", "full"] as const;
+/** Each option and what it does, from the same descriptions the editor shows, so the model reads what the DJ reads. */
+const describe = (options: { value: string; hint?: string; label: string }[], allowed: readonly string[]) =>
+  options.filter(o => allowed.includes(o.value)).map(o => `"${o.value}": ${o.hint ?? o.label}`).join("; ");
 
 const Plan = z.object({
   outBar: z.number().int().describe("Bar of the outgoing track, counted from its first beat, where the transition starts"),
   inBar: z.number().int().describe("Bar of the incoming track, counted from its first beat, it is playing when the transition starts"),
-  bars: z.number().int().describe("Transition length in bars of the outgoing track: 1, 2, 4, 8 or 16"),
-  volume: z.enum(["smooth", "overlap", "fade"]),
-  eq: z.enum(["none", "bass"]),
-  effect: z.enum(["none", "lowpass", "echo", "rise", "reverb", "flanger", "swap"]),
-  stems: z.enum(["none", "vocals"]),
+  bars: z.number().int().describe("Transition length in bars of the outgoing track: 1, 2, 4, 8, 16 or 32"),
+  volume: z.enum(VOLUMES),
+  eq: z.enum(EQS),
+  eqAt: z.number().describe("Where the bass swaps and a cut lands, 0.15 to 0.85 of the transition; 0.5 is the middle"),
+  effect: z.enum(EFFECTS),
+  intensity: z.number().describe("Effect depth, 0.25 to 1.5; 1 is its designed depth"),
+  echoBeats: z.number().describe("Echo delay in beats for echo and dub: 0.25, 0.5, 0.75, 1 or 2"),
+  stems: z.enum(STEMS),
   notes: z.array(z.string()).describe("Two to five short sentences, one per decision, each citing the numbers behind it"),
 });
 
-const SYSTEM = `You plan one transition between two tracks for a two-deck DJ engine. You get each track's analysis and the engine's own automatic plan; return a better plan when you see one, or the same one when it is already right.
+const SYSTEM = () => `You plan one transition between two tracks for a two-deck DJ engine. You get each track's analysis and the engine's own automatic plan; return a better plan when you see one, or the same one when it is already right.
 
 How the engine plays a plan:
 - The incoming deck is tempo-matched to the outgoing one and beat-aligned. When the outgoing track reaches outBar, the incoming track is at inBar, and both run for "bars" bars of the outgoing track.
-- volume: "smooth" is an equal-power crossfade across the whole length; "overlap" brings the new track in at full level in the first quarter and drops the old one in the last quarter; "fade" fades the old one out over the first 60%, then the new one in over the last 60%.
-- eq "bass": the low band (below 250 Hz) of the outgoing track is cut and the incoming one's restored over the middle tenth, so two bass lines never play at once. "none" leaves the lows to the volume curve.
-- effect: "lowpass" sweeps a low-pass filter down on the outgoing track; "rise" opens a high-pass on the incoming one; "echo" feeds the outgoing track into an echo that grows over the second half (an echo out); "reverb" washes the outgoing track into a growing reverb tail while a low pass closes on it (a space out); "flanger" sweeps a flanger over the outgoing track and back; "swap" sweeps a high pass up with reverb on the outgoing track while the incoming one opens from a closed low pass (filter up and down); "none".
-- stems "vocals" (only when both tracks have stems): the outgoing vocals are gone by 40% and the incoming vocals come in from 60%, so two voices never overlap.
+- volume: ${describe(VOLUME_OPTIONS, VOLUMES)}.
+- eq: ${describe(EQ_OPTIONS, EQS)}. The low band is below 250 Hz. eqAt places the swap.
+- effect (on top of the volume curve): ${describe(EFFECT_OPTIONS, EFFECTS)}. intensity scales it; echoBeats times echo and dub to the beat.
+- stems (only when both tracks have stems; otherwise use "none"): ${describe(STEM_OPTIONS, STEMS)}.
 
 How to judge it, as a professional DJ would:
 - Phrasing: start on a phrase boundary (a multiple of 8 or 16 bars from the first beat), where the loudness or a band steps. The outgoing track should leave in its outro, after its last main section; the incoming track's main section (its loud, full-band stretch) should arrive as the transition ends, so inBar + bars lands on it.
 - Harmony: Camelot codes one step apart, the same number with A and B, or the same code mix cleanly over long blends (8-16 bars). Clashing keys need a short transition (2-4 bars) or a filter that hides the mids. A key with keyClarity under 0.05 is a guess; weigh it less.
 - Tempo: under 3% change is inaudible; 3-8% is fine over a shorter blend; over 8%, prefer a 1-2 bar echo out.
 - Bass: if both tracks carry bass (low band near their usual level) across the overlap, swap the bass. If one side has none (a breakdown, an intro), let it cross.
-- Vocals: if both stems show vocals in the overlap, hand them over or shorten the overlap.
+- Vocals: if both stems show vocals in the overlap, hand them over ("vocals" or "full"), sing the old acapella over the new beat ("acapella"), or shorten the overlap.
+- With stems on both, a bass stem swap or a full stem blend sounds cleaner than an eq bass swap over a long blend.
 - Energy: keep the floor moving; do not drop into a quiet intro after a peak unless the next track builds quickly.
 
 All perBar series start at the first beat, one value per bar, in dB. Keep each note to one sentence, in plain English, with the numbers behind it.`;
+
+/** A sentence break: end punctuation, then a capital, unless the word before is an abbreviation or a quote is open. */
+const SENTENCE = /(?<!(?:^|[\s'"(])(?:[Ff]t|[Ff]eat|[Vv]s|Mrs?|Ms|Dr|St|No|Vol|[Pp]t))(?<=[.!?])(?=(?:[^'"]*['"][^'"]*['"])*[^'"]*$)\s+(?=[A-Z])/;
 
 /** Whether Ollama answers and has the model, by its name with or without the ":latest" tag. */
 async function hasModel() {
@@ -71,7 +86,8 @@ export async function POST(request: Request) {
   const barOut = from.barSeconds, barIn = to.barSeconds;
   const automatic = {
     outBar: Math.round((auto.outAt - from.firstBeat) / barOut), inBar: Math.round((auto.inAt - to.firstBeat) / barIn),
-    bars: auto.bars, volume: auto.volume, eq: auto.eq, effect: auto.effect, stems: auto.stems ?? "none", notes: auto.notes ?? [],
+    bars: auto.bars, volume: auto.volume === "custom" ? "smooth" : auto.volume, eq: auto.eq, eqAt: auto.eqAt ?? 0.5, effect: auto.effect,
+    intensity: auto.intensity ?? 1, echoBeats: auto.echoBeats ?? 0.75, stems: auto.stems ?? "none", notes: auto.notes ?? [],
   };
 
   let out: z.infer<typeof Plan>;
@@ -83,7 +99,7 @@ export async function POST(request: Request) {
         // The analysis runs to a few thousand tokens; Ollama's default context would cut it off.
         options: { temperature: 0.2, num_ctx: 16384 },
         messages: [
-          { role: "system", content: SYSTEM },
+          { role: "system", content: SYSTEM() },
           { role: "user", content: JSON.stringify({ outgoing: from, incoming: to, automaticPlan: automatic }) },
         ],
       }),
@@ -105,10 +121,14 @@ export async function POST(request: Request) {
   const inBar = Math.max(0, Math.min(Math.floor((to.duration - to.firstBeat) / barIn) - 1, out.inBar));
   const plan: Omit<TransitionPlan, "fromId" | "toId" | "preset" | "by"> = {
     outAt: from.firstBeat + outBar * barOut, inAt: to.firstBeat + inBar * barIn, bars,
-    volume: out.volume, eq: out.eq, effect: out.effect,
+    volume: out.volume, eq: out.eq, effect: out.effect, curve: undefined,
+    eqAt: Math.max(0.15, Math.min(0.85, Number.isFinite(out.eqAt) ? out.eqAt : 0.5)),
+    intensity: Math.max(0.25, Math.min(1.5, Number.isFinite(out.intensity) ? out.intensity : 1)),
+    echoBeats: [0.25, 0.5, 0.75, 1, 2].reduce((best, n) => Math.abs(n - out.echoBeats) < Math.abs(best - out.echoBeats) ? n : best, 0.75),
     stems: from.perBar.stems && to.perBar.stems ? out.stems : "none",
     // Small models often pack every reason into one note; the editor lists them one sentence a row.
-    notes: out.notes.flatMap(note => note.split(/(?<=[.!?])\s+(?=[A-Z])/)).map(n => n.trim()).filter(Boolean).slice(0, 6),
+    // Not after an abbreviation that track titles carry ("ft. Ellie Goulding"), nor inside a quoted title.
+    notes: out.notes.flatMap(note => note.split(SENTENCE)).map(n => n.trim()).filter(Boolean).slice(0, 6),
   };
   return Response.json({ plan, model: MODEL });
 }
