@@ -8,25 +8,39 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "setup:sodium": "bash scripts/setup-sodium.sh"
+    "setup:stems": "bash scripts/setup-demucs.sh",
+    "test": "vitest run"
   },
   "dependencies": {
+    "@base-ui/react": "^1.9.0",
+    "@gsap/react": "^2.1.2",
+    "@hugeicons/core-free-icons": "^4.4.0",
+    "@hugeicons/react": "^1.1.10",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "gsap": "^3.15.0",
+    "music-metadata": "^12.3.4",
     "next": "^16.0.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "lucide-react": "^0.468.0",
-    "clsx": "^2.1.1",
-    "tailwind-merge": "^3.0.0"
+    "tailwind-merge": "^3.7.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "typescript": "^5.8.3",
+    "@tailwindcss/postcss": "^4.3.4",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "eslint": "^9.0.0",
+    "@typescript-eslint/parser": "^8.72.1",
+    "eslint": "^9.39.5",
     "eslint-config-next": "^16.0.0",
-    "tailwindcss": "^4.1.0",
-    "@tailwindcss/postcss": "^4.1.0",
-    "shadcn": "^3.0.0"
+    "node-web-audio-api": "^2.2.0",
+    "shadcn": "^3.0.0",
+    "tailwindcss": "^4.3.4",
+    "typescript": "^5.8.3",
+    "vitest": "^5.1.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

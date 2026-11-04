@@ -1,0 +1,63 @@
+# Open DJ, all of it: the app (with Demucs and ffmpeg for stems), Ollama for AI transitions, and the model it needs.
+#   docker compose up -d --build        then open http://localhost:3000
+# Settings come from .env next to this file (see .env.example): PORT, DATA_PATH, OLLAMA_MODEL, OLLAMA_URL.
+services:
+  app:
+    build: .
+    image: open-dj:latest
+    ports:
+      # Only this machine: the app has no accounts, so it is not opened to the network.
+      - "127.0.0.1:${PORT:-3000}:3000"
+    environment:
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+    extra_hosts:
+      # So OLLAMA_URL=http://host.docker.internal:11434 reaches an Ollama installed on the host (on a Mac, with the GPU).
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Projects and their tracks, backed up here so they survive the container and the browser.
+      - ${DATA_PATH:-./data}:/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/stems').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:0.40.13
+    volumes:
+      - ollama:/root/.ollama
+    environment:
+      # Keep the model loaded between transitions, so a plan does not wait for it to load again.
+      OLLAMA_KEEP_ALIVE: 24h
+      # The context /api/mix asks for. Loading at the same size means the warm-up below is the load a plan uses.
+      OLLAMA_CONTEXT_LENGTH: "16384"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # Downloads the model once into the ollama volume and loads it into memory, then exits. The app works meanwhile;
+  # the AI plan button turns on when the download finishes (docker compose logs -f model shows it).
+  model:
+    image: ollama/ollama:0.40.13
+    environment:
+      OLLAMA_HOST: ollama:11434
+      MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["ollama pull \"$$MODEL\" && ollama run \"$$MODEL\" 'Reply with OK.' > /dev/null && echo \"$$MODEL ready\""]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  ollama:

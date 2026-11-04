@@ -1,0 +1,10 @@
+node_modules
+.next
+.demucs
+data
+.git
+.claude
+.agents
+.env*
+!.env.example
+npm-debug.log*
