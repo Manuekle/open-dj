@@ -11,7 +11,7 @@ import { cn } from "@/lib/sodium/utils";
 import { Button } from "@/components/sodium/ui/button";
 import { Field, FieldLabel, FieldTitle, Label } from "@/components/sodium/ui/field";
 import { Frame, FrameHeader, FrameStatus, FrameTitle } from "@/components/sodium/ui/frame";
-import { Select } from "@/components/sodium/ui/select";
+import { Pick } from "@/components/pick";
 import { Switch } from "@/components/sodium/ui/switch";
 import { Slider } from "@/components/sodium/ui/slider";
 import { Status } from "@/components/sodium/ui/status";
@@ -23,7 +23,9 @@ import { Ruler, gridOf, token, useCanvas, type Grid } from "@/components/stems/s
    it was sung to (minus the round trip through speakers and microphone, which the latency control sets).
    Takes live in memory for the session: export the mixdown to keep it. */
 
-const LANE_COLORS = ["--data-1", "--data-6", "--data-2", "--data-5"];
+/** The source value of an empty lane (the popup select ignores an empty string). */
+const NONE = "none";
+const LANE_COLORS =["--data-1", "--data-6", "--data-2", "--data-5"];
 /** Playback starts this far ahead of "now" so every lane's source can be scheduled on the same clock edge. */
 const LEAD = 0.05;
 const BUCKETS = 1600;
@@ -326,7 +328,7 @@ export function StudioView() {
 
   async function choose(k: number, value: string) {
     if (armed === k && value !== "voice") { releaseMic(); setArmed(null); }
-    if (value === "") { patch(k, emptyLane()); return; }
+    if (value === NONE) { patch(k, emptyLane()); return; }
     if (value === "voice") {
       if (lanes[k].kind !== "voice") patch(k, { ...emptyLane(), kind: "voice", level: lanes[k].level });
       return;
@@ -415,7 +417,7 @@ export function StudioView() {
 
   const set = <T,>(list: T[], k: number, v: T) => list.map((x, i) => i === k ? v : x);
   const sourceItems = useMemo(
-    () => [{ value: "", label: "Empty" }, { value: "voice", label: "My voice" }, ...ready.map(t => ({ value: t.id, label: t.title }))],
+    () => [{ value: NONE, label: "Empty" }, { value: "voice", label: "My voice" }, ...ready.map(t => ({ value: t.id, label: t.title }))],
     [ready],
   );
   const stemItems = STEMS.map((s, i) => ({ value: String(i), label: s.label }));
@@ -477,11 +479,11 @@ export function StudioView() {
                     onClick={() => setSolo(m => set(m, k, !m[k]))}><span className="type-label-sm">S</span></Button>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Select native size="sm" aria-label={`Source of track ${k + 1}`} items={sourceItems} disabled={recording}
-                    value={l.kind === "empty" ? "" : l.kind === "voice" ? "voice" : l.trackId ?? ""}
-                    onValueChange={v => void choose(k, v ?? "")}/>
-                  {l.kind === "stem" && <Select native size="sm" aria-label={`Stem of track ${k + 1}`} items={stemItems} className="w-28 shrink-0" disabled={l.loading}
-                    value={String(l.stem)} onValueChange={v => l.trackId && void loadStem(k, l.trackId, Number(v ?? 0))}/>}
+                  <Pick aria-label={`Source of track ${k + 1}`} items={sourceItems} disabled={recording} className="min-w-0 flex-1"
+                    value={l.kind === "empty" ? NONE : l.kind === "voice" ? "voice" : l.trackId ?? NONE}
+                    onValueChange={v => void choose(k, v)}/>
+                  {l.kind === "stem" && <Pick aria-label={`Stem of track ${k + 1}`} items={stemItems} className="w-28 shrink-0" disabled={l.loading}
+                    value={String(l.stem)} onValueChange={v => { if (l.trackId) void loadStem(k, l.trackId, Number(v)); }}/>}
                 </div>
                 <p className="truncate type-body-sm text-text-3" aria-live="polite">
                   {l.error ?? (l.loading ? "Reading stems…" : l.kind === "voice" ? (isArmed ? (l.buffer ? "Armed: Record replaces the take" : "Armed: press Record") : l.buffer ? "Voice take" : "Arm to record your voice") : l.kind === "stem" ? "Stem of the library track" : "No clip")}
@@ -516,14 +518,14 @@ export function StudioView() {
         {!target ? <p className="p-4 type-body-sm text-text-2">Record your voice on a track first. Autotune corrects a take to a key and scale, and keeps the original.</p>
           : <div className="flex flex-wrap items-end gap-x-6 gap-y-4 p-4">
             <Field className="w-28"><FieldLabel>Track</FieldLabel>
-              <Select native size="sm" value={String(target.k)} disabled={tuning !== null}
-                items={voiceTakes.map(({ k }) => ({ value: String(k), label: `Track ${k + 1}` }))} onValueChange={v => setTuneTrack(Number(v ?? 0))}/></Field>
+              <Pick aria-label="Track to tune" value={String(target.k)} disabled={tuning !== null}
+                items={voiceTakes.map(({ k }) => ({ value: String(k), label: `Track ${k + 1}` }))} onValueChange={v => setTuneTrack(Number(v))}/></Field>
             <Field className="w-24"><FieldLabel>Key</FieldLabel>
-              <Select native size="sm" value={String(key)} disabled={tuning !== null}
-                items={NOTE_NAMES.map((n, i) => ({ value: String(i), label: n }))} onValueChange={v => setKey(Number(v ?? 0))}/></Field>
+              <Pick aria-label="Key" value={String(key)} disabled={tuning !== null}
+                items={NOTE_NAMES.map((n, i) => ({ value: String(i), label: n }))} onValueChange={v => setKey(Number(v))}/></Field>
             <Field className="w-44"><FieldLabel>Scale</FieldLabel>
-              <Select native size="sm" value={scale} disabled={tuning !== null}
-                items={(Object.keys(SCALES) as Scale[]).map(s => ({ value: s, label: SCALE_LABELS[s] }))} onValueChange={v => setScale((v ?? "major") as Scale)}/></Field>
+              <Pick aria-label="Scale" value={scale} disabled={tuning !== null}
+                items={(Object.keys(SCALES) as Scale[]).map(s => ({ value: s, label: SCALE_LABELS[s] }))} onValueChange={v => setScale(v as Scale)}/></Field>
             <div className="flex w-52 flex-col gap-1">
               <FieldTitle id="speed-label">Retune speed · {speed === 0 ? "Hard" : `${speed} ms`}</FieldTitle>
               <Slider aria-labelledby="speed-label" min={0} max={300} step={5} value={speed} disabled={tuning !== null}
