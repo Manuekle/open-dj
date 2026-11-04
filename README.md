@@ -1,10 +1,39 @@
-# Shift
+<p align="center">
+  <img src="src/app/icon.svg" alt="Shift logo" width="128" height="128">
+</p>
 
-A two-deck DJ workstation in the browser, built with Next.js, React, TypeScript and Web Audio. It splits tracks into stems with Demucs, plans transitions from key, tempo, loudness and frequency bands, asks a local AI model (Ollama) for a second opinion, and saves every project as you work. Everything runs on your own machine.
+<h1 align="center">Shift</h1>
+
+<p align="center">
+  A two-deck DJ workstation in your browser, with stem separation, automatic transition planning,<br>
+  a local AI second opinion, a four-track voice studio and a rhythm game. Everything runs on your own machine.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Manuekle/open-dj/actions/workflows/ci.yml"><img src="https://github.com/Manuekle/open-dj/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/node-%E2%89%A522-339933.svg" alt="Node.js 22 or newer">
+</p>
+
+Shift is built with Next.js, React, TypeScript and the Web Audio API. It splits tracks into stems with [Demucs](https://github.com/facebookresearch/demucs), analyzes tempo, key, loudness and frequency bands in the browser, plans transitions between tracks, asks a local model through [Ollama](https://ollama.com) for a second opinion, and saves every project as you work. There are no accounts, no analytics and no cloud services.
+
+## Contents
+
+- [Quick start](#quick-start)
+- [Features](#features)
+- [Pages](#pages)
+- [Configuration](#configuration)
+- [Running without Docker](#running-without-docker)
+- [Development](#development)
+- [Project layout](#project-layout)
+- [Troubleshooting](#troubleshooting)
+- [Design](#design)
+- [Privacy](#privacy)
+- [License and credits](#license-and-credits)
 
 ## Quick start
 
-You need [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine with Compose) with at least 8 GB of memory for Docker and about 10 GB of free disk.
+You need [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine with Compose), with at least 8 GB of memory for Docker and about 10 GB of free disk.
 
 ```bash
 git clone https://github.com/Manuekle/open-dj.git && cd open-dj && docker compose up -d --build
@@ -12,7 +41,7 @@ git clone https://github.com/Manuekle/open-dj.git && cd open-dj && docker compos
 
 Open http://localhost:3000.
 
-That one command builds the app image (Node, ffmpeg, Demucs and its model), starts Ollama, downloads the AI model and loads it into memory. The first run takes 10 to 15 minutes, mostly downloads; later starts take seconds. The app works as soon as it is up; the **AI plan** button turns on once the model download finishes (`docker compose logs -f model` shows it).
+That one command builds the app image (Node, ffmpeg, Demucs and its model), starts Ollama, downloads the AI model and loads it into memory. The first run takes 10 to 15 minutes, mostly downloads; later starts take seconds. The app works as soon as it is up. The **AI plan** button turns on once the model download finishes (`docker compose logs -f model` shows progress).
 
 | Service | What it does |
 |---|---|
@@ -42,16 +71,145 @@ docker compose down -v
 ```
 Stop and also delete the downloaded model (it is pulled again on the next start). `./data` is never deleted by Docker.
 
-### Settings
+## Features
+
+### Decks and mixer
+
+- Two decks with play, cue, 8 hot cues, beat sync on the estimated BPM, beat jumps, loops (in, out, auto, 1/4 to 32 beats), tempo ±25%, jog wheels and a waveform per deck.
+- A mixer with trim, 3-band EQ, a color filter, channel faders, level meters, master and crossfader, plus a beat FX unit (echo, reverb, filter, flanger, phaser, bitcrush).
+- **Manual tempo**: type a BPM for a track the analysis gave no tempo (a loose live take, an orchestra) or the wrong one (half or double time). It becomes a constant beat grid, so sync, bar extrapolation and the planner treat it like any steady track. The range is 40 to 240 BPM.
+- Keyboard shortcuts for both decks (press `?` to list them).
+- Recording of the master output with MediaRecorder (WebM/Opus or M4A, whatever the browser supports), saved under Recordings.
+
+### Mixing analysis
+
+Every track is analyzed in the browser on import (`src/lib/analyze.ts`, with the signal processing in `src/lib/analyze-dsp.ts`, run in a Web Worker):
+
+- **Tempo and beat grid**: onset strength, autocorrelation for the tempo, and a comb filter for the phase of the first beat.
+- **Key**: a chromagram (4096-point FFT every half second, 65 Hz to 2.1 kHz folded onto 12 pitch classes) correlated with the Krumhansl-Kessler major and minor profiles, given as a key and a Camelot code with a clarity score.
+- **Loudness**: integrated LUFS per ITU-R BS.1770-4 (K-weighting, 400 ms blocks, the -70 LUFS and -10 LU gates). Decks trim toward -11 LUFS on load.
+- **Bands**: power per second in the DJ-mixer bands, low 20-250 Hz, mid 250-2500 Hz, high 2.5-5.5 kHz, in dB.
+- **Stems**: level per second of vocals, drums, bass and melody, once a track is split.
+
+### Transitions
+
+The transition editor shows both waveforms around the mix, with the volume, bass and effect curves drawn on them. Drag a waveform to move its point (it snaps to the beat), then pick the shape:
+
+| Option | Choices |
+|---|---|
+| Length | 1 to 16 bars |
+| Volume curve | Crossfade, Linear, S-curve, Overlap, Early in, Hold out, Fade out/in, Cut, or **Custom** (click a curve to add a point, drag to move it, double-click or `Delete` to remove it) |
+| Bass / EQ | None, Bass swap, Gradual |
+| Effect | Low pass out, High pass out, High pass in, Low pass in, Filter swap, Echo out, Dub echo, Reverb wash, Flanger |
+| Stem move | Vocal handover, Bass stem swap, Drums first, Acapella over, Full stem blend |
+
+**Mix now** runs the transition at once. The curves live in `src/lib/transition.ts`, shared by the audio engine and the editor, so what is drawn is what plays. A transition can also be rendered offline through the real deck graph (`src/lib/mix-render.ts`), which is how the tests look at the actual samples.
+
+### Smart AutoMix
+
+AutoMix is an Auto DJ that plays a queue deck after deck (`src/lib/automix.ts`). While one track plays it analyzes the next, loads it on the other deck, plans the transition (or uses the plan you saved for that pair), waits for the out point and mixes. The queue holds track ids in any order, supports loop, and the **Smart** order sorts it by how well tracks go together (tempo, key on the Camelot wheel and energy flow), against **Original** order. Skips, queue edits, manual loads and stop all cancel stale work through an epoch counter, so a late answer never lands on a newer situation.
+
+The AutoMix panel shows the queue, a countdown to the next mix, the transition curves, the score of the coming pair and the state of the AI and stem services. Settings let you force a style, length, tempo matching (Off, Gentle, Standard), energy flow (Auto, Maintain, Build, Relax) and any of the volume, EQ, effect and stem moves, or leave each on Auto. Switches turn on the AI plan and automatic stem splitting for the queue.
+
+The set timeline lays the whole queue out on one clock, with each track entering at the out point of the one before.
+
+#### The transition planner
+
+For two loaded tracks, `src/lib/transition-planner.ts` builds candidates from six strategies, each at its own lengths and at a few out points (where the outgoing body ends by the loudness heuristic, 8 bars before that, the last bar that fits, your own point) and in points (timed so the incoming body arrives as the blend ends, or from its first beat):
+
+- **Smooth Blend**: 16 beat-matched bars, equal power; only for keys known to sit together and a tempo change under 4%.
+- **Beatmatch**: 8 or 4 beat-matched bars with the bass swapped at the middle; up to an 8% tempo change.
+- **Energy Boost**: the new track in early at full level behind an opening high pass; only where the heard level rises (after load trims) or the keys make a boost move on the Camelot wheel.
+- **EQ Transition**: bass swap plus a filter swap that hides the mids, the pick for clashing keys.
+- **Quick Cut**: 1 or 2 bars on a bar line; past an 8% tempo change the incoming track keeps its own tempo and the old one echoes out.
+- **Smart Fallback**: a crossfade that does not lean on the beat grid, taken when nothing else can play (no tempo, a track too short), when the best score is under 45 or when the analysis confidence is under 30%.
+
+Each candidate gets a score from 0 to 100, the weighted mean of tempo, harmony, energy flow, structure, bass, vocals, beat grid, fit and continuity (weights are configurable), and a separate confidence in the analysis behind it (beat strength, key clarity, loudness series, bands, analysis version). A criterion with no data drops out of the score instead of being guessed, and the notes say which. Structure means the loudness heuristics only: the planner does not detect verses, choruses or downbeats.
+
+The chosen plan is an ordinary transition plan, so the editor, its draggable points and **Mix now** work on it as before, and a plan you edit is rated again with the same criteria. Its reasons are listed under the editor.
+
+### AI transitions
+
+**AI plan** in the transition header gives a local model, through Ollama, both tracks' analysis (per-bar loudness, bands and stems, key, tempo, LUFS) and the automatic plan (`src/app/api/mix/route.ts`). Ollama holds the answer to a JSON schema: phrase-aligned out and in bars, length, curve, EQ, effect and stem move, with a reason per decision. The plan is kept like one you edited, tagged AI. Nothing is sent outside your machine.
+
+### Stems
+
+Press **Split** in the library's Stems column, or **Split stems** in a deck's Stems pad mode. `src/app/api/stems/route.ts` runs Demucs (`htdemucs`) on the machine serving the app, about half the track's length on an Apple M2 CPU, and merges the four stems (vocals, drums, bass, melody) into one 8-channel FLAC that the browser keeps with the track.
+
+A deck plays that file through one gain per stem (`src/lib/audio-engine.ts`), so the stems stay sample-locked through tempo, seeks and loops. The Stems pads mute each stem, or jump to **Vox** (vocals only), **Inst** (no vocals), **Beat** (drums and bass) or **All**. The [Stems page](#pages) shows every stem on its own lane, like a DAW playlist, with mute, solo and level per lane.
+
+### Studio
+
+The [Studio page](#pages) is a four-track workspace for recording your voice over your library (`src/components/studio/`, `src/lib/studio.ts`):
+
+- Each of the four lanes takes a track, a stem of a track, or a microphone take. Arm a lane to record over the others, with mute, solo, level and a nudge of ±300 ms per lane.
+- A latency slider lines the recorded voice up with what the singer heard through the speakers.
+- **Autotune** corrects a take offline to a key and scale (chromatic, major, minor or minor pentatonic) with a retune speed and an amount (`src/lib/autotune.ts`). It tracks pitch with YIN and retunes with pitch-synchronous overlap-add, so the length and the formants stay. The original take is kept, so you can tune again.
+- **Export WAV** renders the mix down.
+
+### Sampler and drum machine
+
+On the main page, below the decks, a sampler and 16-step drum machine feed the same master, so a recording takes them too. Play a built-in tone or a dropped-in sample from the on-screen piano, the computer keyboard or a MIDI keyboard, shape it with an effects chain, and play back Standard MIDI Files (`src/components/studio.tsx`, `src/lib/sampler.ts`, `src/lib/midi.ts`).
+
+### Rhythm game
+
+The [Rhythm page](#pages) turns any track from your library, or a file you drop in, into a falling-tiles rhythm game charted from the audio alone (`src/lib/rhythm-game/`). Onset envelopes say where something happens and the beat grid says where a player would feel it. Low sounds go to the left lanes and bright ones to the right.
+
+| Difficulty | Lanes | Keys |
+|---|---|---|
+| Easy, Normal | 4 | `D` `F` `J` `K` |
+| Hard | 6 | `S` `D` `F` `J` `K` `L` |
+| Expert | 7 | `S` `D` `F` `Space` `J` `K` `L` |
+
+Scroll speed and timing offset are adjustable and remembered.
+
+### Projects and saving
+
+Each project is a set with its own tracks and the whole session: what each deck holds and where it is, tempo, EQ, trim, color, effects, stem mutes, the mixer, the play queue, saved transition plans, auto mix and hot cues per track. Pick, create, rename or delete projects from the header; switching saves the one you leave. Tracks you add go to the open project.
+
+Saving is automatic, and the header shows when it last happened. Every change reaches the browser's IndexedDB within a second (`src/hooks/use-projects.ts`), and `src/app/api/backup/route.ts` mirrors projects, their tracks (audio, stems, cover, analysis) and recordings to `./data` every few seconds and once more as the tab closes. On open, the newer copy of each project wins, and anything the browser lost comes back from disk, so a cleared browser, another browser or a crash costs at most the last few seconds. If the `data` folder is lost instead, any browser that still has the projects fills it again.
+
+To move a set to another computer, copy the `data` folder next to `compose.yaml` there and start it.
+
+### Import from a link
+
+**From link** in the library downloads one track's audio and imports it like a dropped file, optionally cut to a start and end (`MM:SS`, `HH:MM:SS` or plain seconds). `src/app/api/import-url/route.ts` runs [yt-dlp](https://github.com/yt-dlp/yt-dlp) and ffmpeg on the machine serving the app. The audio is kept as published (AAC in M4A preferred, otherwise Opus or MP3) with no re-encoding, and files are capped at 150 MB.
+
+The Docker image includes ffmpeg but **not yt-dlp**, so this feature needs yt-dlp installed on the machine running the app (without Docker) or added to the image. `YTDLP_BIN` and `FFMPEG_BIN` override their paths. Use it only for audio you have the right to copy: public domain, Creative Commons or your own.
+
+## Pages
+
+| Route | What it is |
+|---|---|
+| `/` | The DJ workstation: library, two decks, mixer, transition editor, AutoMix, set timeline, sampler and drum machine. |
+| `/stems` | Every stem of a track on its own lane, with mute, solo and level. |
+| `/studio` | Four-track studio: record your voice over stems of your library, autotune it, export the mix. |
+| `/play` | The rhythm game. |
+| `/diagnostics` | An audio self-test (automation, pitch, clock and drift checks) to run in each browser you care about and compare. |
+
+## Configuration
 
 Copy `.env.example` to `.env` and uncomment what you want to change, then run `docker compose up -d` again.
 
 | Variable | Default | What it sets |
 |---|---|---|
 | `PORT` | `3000` | Port on this machine. The app only listens on localhost, since it has no accounts. |
-| `DATA_PATH` | `./data` | Folder for the project backup. |
-| `OLLAMA_MODEL` | `qwen2.5:3b` | Model for AI transitions. `qwen2.5:7b` plans better and needs about 6 GB of Docker memory. |
-| `OLLAMA_URL` | `http://ollama:11434` | Where the app finds Ollama. |
+| `DATA_PATH` | `./data` | Folder for the project backup (mounted as `/data` in Docker). |
+| `OLLAMA_MODEL` | `qwen2.5:3b` in Docker, `qwen2.5:7b` otherwise | Model for AI transitions. `qwen2.5:7b` plans better and needs about 6 GB of Docker memory. |
+| `OLLAMA_URL` | `http://ollama:11434` in Docker, `http://127.0.0.1:11434` otherwise | Where the app finds Ollama. |
+
+Without Docker, the routes also read these (all optional):
+
+| Variable | Default | Used by |
+|---|---|---|
+| `DATA_DIR` | `./data` | Disk backup. |
+| `DEMUCS_BIN` | `.demucs/bin/demucs` | Stem separation. |
+| `DEMUCS_MODEL` | `htdemucs` | Stem separation. |
+| `DEMUCS_DEVICE` | unset (Demucs picks) | `cpu`, `mps` or `cuda`. |
+| `FFMPEG_BIN` | `ffmpeg` | Stems and link import. |
+| `YTDLP_BIN` | `yt-dlp` | Link import. |
+
+### Faster AI on a Mac
 
 Ollama in Docker on a Mac runs on the CPU only, so a plan for a new pair of tracks takes one to two and a half minutes (the button shows Planning meanwhile). With [Ollama](https://ollama.com) installed on the Mac itself it uses the GPU and is several times faster: run `ollama pull qwen2.5:7b`, then set `OLLAMA_URL=http://host.docker.internal:11434` and `OLLAMA_MODEL=qwen2.5:7b` in `.env`.
 
@@ -76,100 +234,66 @@ ollama pull qwen2.5:7b
 npm run dev
 ```
 
-Open http://localhost:3000. Stems and AI are optional: without Demucs the Split buttons stay disabled, and without Ollama the AI plan button does. Other scripts: `npm run typecheck`, `npm run lint`, `npm run build`, and the design system lint `npx eslint -c sodium.eslint.config.mjs .`.
+Open http://localhost:3000. Stems and AI are optional: without Demucs the Split buttons stay disabled, and without Ollama the AI plan button does.
 
-## Features
+## Development
 
-### Decks and mixer
+| Command | What it does |
+|---|---|
+| `npm run dev` | Start the dev server. |
+| `npm run build` / `npm start` | Production build and server. |
+| `npm run typecheck` | `tsc --noEmit`. |
+| `npm run lint` | ESLint. |
+| `npx eslint -c sodium.eslint.config.mjs .` | The Sodium design system lint. |
+| `npm test` | Vitest: analysis, planner, AutoMix, transitions, studio, autotune, rhythm game and the offline audio renders. |
 
-- Two decks with play, cue, 8 hot cues, beat sync on the estimated BPM, beat jumps, loops (in, out, auto, 1/4 to 32 beats), tempo ±25%, jog wheels and a waveform per deck.
-- A mixer with trim, 3-band EQ, a color filter, channel faders, level meters, master and crossfader, plus a beat FX unit (echo, reverb, filter, flanger, phaser, bitcrush).
-- Keyboard shortcuts for both decks (press `?`).
-- Recording of the master output with MediaRecorder (WebM/Opus or M4A, whatever the browser supports), saved under Recordings.
-
-### Transitions
-
-The transition editor shows both waveforms around the mix, with the volume, bass and effect curves drawn on them. Drag a waveform to move its point (it snaps to the beat), and pick the length (1 to 16 bars), volume curve, bass swap, effect and stem move. **Mix now** runs it at once; **Auto mix** runs each transition at its out point and loads the next track. The curves live in `src/lib/transition.ts`, shared by the audio and the editor, so what is drawn is what plays.
-
-### Mixing analysis
-
-Every track is analyzed in the browser on import (`src/lib/analyze.ts`):
-
-- **Tempo and beat grid**: onset strength, autocorrelation for the tempo, and a comb filter for the phase of the first beat.
-- **Key**: a chromagram (4096-point FFT every half second, 65 Hz to 2.1 kHz folded onto 12 pitch classes) correlated with the Krumhansl-Kessler major and minor profiles, given as a key and a Camelot code with a clarity score.
-- **Loudness**: integrated LUFS per ITU-R BS.1770-4 (K-weighting, 400 ms blocks, the -70 LUFS and -10 LU gates). Decks trim toward -11 LUFS on load.
-- **Bands**: power per second in the DJ-mixer bands, low 20-250 Hz, mid 250-2500 Hz, high 2.5-5.5 kHz, in dB.
-- **Stems**: level per second of vocals, drums, bass and melody, once a track is split.
-
-The automatic plan comes from Smart AutoMix's transition planner (`src/lib/transition-planner.ts`). For the two loaded tracks it builds candidates from six strategies, each at its own lengths and at a few out points (where the outgoing body ends by the loudness heuristic, 8 bars before that, the last bar that fits, your own point) and in points (timed so the incoming body arrives as the blend ends, or from its first beat):
-
-- **Smooth Blend**: 16 beat-matched bars, equal power; only for keys known to sit together and a tempo change under 4%.
-- **Beatmatch**: 8 or 4 beat-matched bars with the bass swapped at the middle; up to an 8% tempo change.
-- **Energy Boost**: the new track in early at full level behind an opening high pass; only where the heard level rises (after load trims) or the keys make a boost move on the Camelot wheel.
-- **EQ Transition**: bass swap plus a filter swap that hides the mids, the pick for clashing keys.
-- **Quick Cut**: 1 or 2 bars on a bar line; past an 8% tempo change the incoming track keeps its own tempo and the old one echoes out.
-- **Smart Fallback**: a crossfade that does not lean on the beat grid, taken when nothing else can play (no tempo, a track too short), when the best score is under 45 or when the analysis confidence is under 30%.
-
-Each candidate gets a score from 0 to 100, the weighted mean of tempo, harmony, energy flow, structure, bass, vocals, beat grid, fit and continuity (weights are configurable), and a separate confidence in the analysis behind it (beat strength, key clarity, loudness series, bands, analysis version). A criterion with no data drops out of the score instead of being guessed, and the notes say which. Structure means the loudness heuristics only: the planner does not detect verses, choruses or downbeats. The chosen plan is an ordinary transition plan, so the editor, its draggable points and **Mix now** work on it as before, and a plan you edit is rated again with the same criteria. Its reasons are listed under the editor. The earlier rule-based `autoPlan` in `src/lib/transition.ts` is still there, and the AI plan still receives the automatic plan.
-
-### AI transitions
-
-**AI plan** in the transition header gives both tracks' analysis (per-bar loudness, bands and stems, key, tempo, LUFS) and the automatic plan to a local model through Ollama (`src/app/api/mix/route.ts`). Ollama holds the answer to a JSON schema: phrase-aligned out and in bars, length, curve, eq, effect and stem move, with a reason per decision. The plan is kept like one you edited, tagged AI. Nothing is sent outside your machine.
-
-### Stems
-
-Press **Split** in the library's Stems column, or **Split stems** in a deck's Stems pad mode. `src/app/api/stems/route.ts` runs Demucs (htdemucs) on the machine serving the app, about half the track's length on an Apple M2 CPU, and merges the four stems into one 8-channel FLAC that the browser keeps with the track. A deck plays that file through one gain per stem (`src/lib/audio-engine.ts`), so the stems stay sample-locked through tempo, seeks and loops. The Stems pads mute each stem, or jump to Vox (vocals only), Inst (no vocals), Beat (drums and bass) or All.
-
-Without Docker, the route reads `DEMUCS_BIN` (default `.demucs/bin/demucs`), `DEMUCS_MODEL` (default `htdemucs`), `DEMUCS_DEVICE` (`cpu`, `mps` or `cuda`; Demucs picks when unset) and `FFMPEG_BIN`.
-
-### Projects and saving
-
-Each project is a set with its own tracks and the whole session: what each deck holds and where it is, tempo, EQ, trim, color, effects, stem mutes, the mixer, saved transition plans, auto mix and hot cues per track. Pick, create, rename or delete projects from the header; switching saves the one you leave. Tracks you add go to the open project.
-
-Saving is automatic, and the header shows when it last happened. Every change reaches the browser's IndexedDB within a second (`src/hooks/use-projects.ts`), and `src/app/api/backup/route.ts` mirrors projects, their tracks (audio, stems, cover, analysis) and recordings to `./data` every few seconds and once more as the tab closes. On open, the newer copy of each project wins, and anything the browser lost comes back from disk, so a cleared browser, another browser or a crash costs at most the last few seconds. If the `data` folder is lost instead, any browser that still has the projects fills it again.
-
-To move a set to another computer, copy the `data` folder next to `compose.yaml` there and start it.
-
-### Import from a link
-
-**From link** in the library downloads one track's audio and imports it like a dropped file, optionally cut to a start and end (`MM:SS` or `HH:MM:SS`). `src/app/api/import-url/route.ts` runs [yt-dlp](https://github.com/yt-dlp/yt-dlp) (the maintained youtube-dl fork) and ffmpeg on the machine serving the app, so both must be installed (`YTDLP_BIN` and `FFMPEG_BIN` override their paths). Use it only for audio you have the right to copy: public domain, Creative Commons or your own.
-
-### Studio
-
-A sampler and 16-step drum machine on the same master, so a recording takes it too: play a built-in tone or a dropped-in sample from the on-screen piano, the computer keyboard or a MIDI keyboard, shape it with an effects chain, and play back Standard MIDI Files (`src/components/studio.tsx`, `src/lib/sampler.ts`, `src/lib/midi.ts`).
+CI (`.github/workflows/ci.yml`) runs typecheck, lint and build on Node 22 for every push to `main` and every pull request.
 
 ## Project layout
 
 | Path | What it holds |
 |---|---|
-| `src/hooks/use-dj.ts` | All audio and session state: decks, mixer, transitions, stems, AI plans. |
-| `src/hooks/use-projects.ts` | Projects, autosave, and the disk backup sync. |
-| `src/lib/audio-engine.ts` | The Web Audio graph: per-deck stems, trim, EQ, filters, effects, crossfader, recorder. |
-| `src/lib/analyze.ts` | Tempo, beat grid, key, LUFS, bands and stem levels. |
-| `src/lib/transition.ts` | Transition curves, structure heuristics and the rule-based plan. |
-| `src/lib/transition-planner.ts` | Smart AutoMix's transition planner: candidates, scoring, confidence, strategy choice. |
+| `src/app` | Pages (`/`, `/stems`, `/studio`, `/play`, `/diagnostics`), the app icon and the API routes. |
 | `src/app/api/stems` | Demucs stem separation jobs. |
 | `src/app/api/mix` | The AI planner, on Ollama. |
 | `src/app/api/backup` | The disk backup of projects, tracks and recordings. |
+| `src/app/api/import-url` | Audio import from a link with yt-dlp and ffmpeg. |
+| `src/hooks/use-dj.ts` | All audio and session state: decks, mixer, transitions, stems, AI plans, AutoMix host. |
+| `src/hooks/use-projects.ts` | Projects, autosave and the disk backup sync. |
+| `src/lib/audio-engine.ts`, `deck-graph.ts` | The Web Audio graph: per-deck stems, trim, EQ, filters, effects, crossfader, recorder. |
+| `src/lib/analyze.ts`, `analyze-dsp.ts` | Tempo, beat grid, key, LUFS, bands and stem levels. |
+| `src/lib/transition.ts`, `transition-options.ts` | Transition curves, structure heuristics, the rule-based plan and the option names. |
+| `src/lib/transition-planner.ts` | Smart AutoMix's planner: candidates, scoring, confidence, strategy choice. |
+| `src/lib/automix.ts`, `queue.ts`, `planner.ts` | The Auto DJ state machine, the play queue and queue-level planning (Smart ordering, skips). |
+| `src/lib/autotune.ts`, `studio.ts`, `sampler.ts`, `midi.ts` | Studio: pitch correction, timeline helpers, sampler and MIDI. |
+| `src/lib/rhythm-game` | Chart generation, judging and the canvas playfield. |
+| `src/lib/procedural` | Procedural sound effects for the studio (see credits). |
 | `src/components` | The interface, built on the Sodium design system. |
 | `scripts/setup-demucs.sh` | Demucs install for running without Docker. |
+| `docs/superpowers/specs` | Design notes for larger features. |
 
 ## Troubleshooting
 
 - **The AI plan button stays off.** Ollama is not reachable or the model is not pulled. With Docker, `docker compose logs model` shows the download; without Docker, run `ollama serve` and `ollama pull qwen2.5:7b`. Hovering the button says which.
-- **An AI plan times out.** The model is too large for the memory or CPU Docker has. Use `OLLAMA_MODEL=qwen2.5:3b`, give Docker more memory, or use Ollama on the host as described under Settings.
+- **An AI plan times out.** The model is too large for the memory or CPU Docker has. Use `OLLAMA_MODEL=qwen2.5:3b`, give Docker more memory, or use Ollama on the host as described under [Faster AI on a Mac](#faster-ai-on-a-mac).
 - **The Split buttons stay off.** Demucs is not installed: run `npm run setup:stems`, or use Docker, which includes it.
+- **From link says `yt-dlp is not installed`.** Install yt-dlp on the machine running the app (see [Import from a link](#import-from-a-link)); the Docker image does not ship it.
 - **Port 3000 is in use.** Set `PORT=3001` in `.env` (or run `PORT=3001 docker compose up -d`).
-- **Stems play as plain stereo in Safari or Firefox.** Multichannel stem playback is verified in Chromium browsers (Chrome, Edge, Arc, Brave).
+- **Stems play as plain stereo in Safari or Firefox.** Multichannel stem playback is verified in Chromium browsers (Chrome, Edge, Arc, Brave). Open `/diagnostics` in each browser to compare.
+- **Recorded voice in the Studio sits early or late.** Adjust the latency slider, or nudge that single lane.
 
 ## Design
 
 The interface uses the [Sodium](https://design.how/systems/sodium) design system (dark theme), installed from the design.how registry into `src/components/sodium`. Follow `.claude/skills/sodium/SKILL.md` for UI changes and run its lint (`npx eslint -c sodium.eslint.config.mjs .`). Icons come from Hugeicons, swapped in through Sodium's single icon file (`src/components/sodium/icon.tsx`). Sodium has no rotary control or platter, so the knobs and jog wheels are flat line drawings on Sodium's line and data tokens, animated with GSAP.
 
+The logo (`src/app/icon.svg`) is four mirrored ellipses in an orange gradient on a dark tile. The same glyph is drawn in the header by `src/components/app-mark.tsx`.
+
 ## Privacy
 
-No accounts, no analytics, no cloud services. Audio, analysis and recordings stay in the browser and in the `data` folder on the machine running the app. Stem separation runs there in a temporary folder that is deleted once the stems come back, and AI transitions run on the local Ollama model. The app only listens on localhost.
+No accounts, no analytics, no cloud services. Audio, analysis and recordings stay in the browser and in the `data` folder on the machine running the app. Stem separation runs there in a temporary folder that is deleted once the stems come back, and AI transitions run on the local Ollama model. The app only listens on localhost. The one outbound request is the one you ask for: **From link** contacts the site you paste.
 
-## License
+## License and credits
 
 MIT, see [LICENSE](LICENSE). The hardware-like controller appearance is an independent HTML/CSS recreation, not firmware or code from a hardware manufacturer.
+
+Built on [Next.js](https://nextjs.org), [React](https://react.dev), [GSAP](https://gsap.com), [Demucs](https://github.com/facebookresearch/demucs), [Ollama](https://ollama.com), [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [ffmpeg](https://ffmpeg.org). The studio's sound effects use recipes from [procedural-sounds](https://github.com/m1ckc3s/procedural-sounds); see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

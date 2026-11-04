@@ -389,7 +389,9 @@ export function TransitionPanel({ dj }: { dj: DJ }) {
     : null;
 
   return <Frame aria-label="Transition" id="transition">
-    <FrameHeader>
+    {/* Title, state and meta share a row only where the 740px of actions and meta fit beside them; below that the meta
+        drops to its own row and the actions wrap, so the header never pushes the page wider than the screen. */}
+    <FrameHeader className="flex-wrap gap-y-1 py-1.5 lg:flex-nowrap lg:py-0">
       <FrameTitle>Transition{transitions > 1 ? ` ${sel + 1}/${transitions}` : ""}</FrameTitle>
       <FrameStatus>
         {locked ? <Status size="sm" status="running">Mixing {Math.round(running.progress * 100)}%</Status>
@@ -397,8 +399,8 @@ export function TransitionPanel({ dj }: { dj: DJ }) {
           : plan?.by === "ai" ? <Tag size="sm" variant="outline">AI</Tag>
           : plan?.preset === "custom" ? <Tag size="sm" variant="outline">Custom</Tag> : null}
       </FrameStatus>
-      {plan && from && <FrameValue meta>{strategyLabel} · {plan.bars} {plan.bars === 1 ? "bar" : "bars"} · {(spanOn(from, plan.bars) / ((fromDeck && dj.decks[fromDeck].rate) || 1)).toFixed(1)} s{rating ? ` · ${rating}` : ""}</FrameValue>}
-      <FrameActions>
+      {plan && from && <FrameValue meta className="order-last basis-full whitespace-normal lg:order-none lg:basis-auto lg:whitespace-nowrap">{strategyLabel} · {plan.bars} {plan.bars === 1 ? "bar" : "bars"} · {(spanOn(from, plan.bars) / ((fromDeck && dj.decks[fromDeck].rate) || 1)).toFixed(1)} s{rating ? ` · ${rating}` : ""}</FrameValue>}
+      <FrameActions className="max-w-full flex-wrap justify-end">
         <Hint label={onDecks ? "Preview from two bars before the out point" : "Preview needs both tracks on the decks"}>
           <Button size="icon-sm" variant="ghost" disabled={!plan || !!running || !onDecks} onClick={() => plan && void dj.preview(plan)} aria-label="Preview from two bars before the out point"><Icon icon={Play}/></Button>
         </Hint>

@@ -94,18 +94,18 @@ export function DJApp() {
     <a href="#controller" className="sr-only focus:not-sr-only focus:fixed focus:start-2 focus:top-2 focus:z-(--z-overlay) focus:bg-panel focus:p-2 type-label">Skip to the controller</a>
 
     {/* One ruled row of cells: the mark and name, the search, where the session stands, then its actions. It scrolls
-        with the page and sits inset like the cards below. On a phone the search drops to its own row. */}
+        with the page and sits inset like the cards below. Below lg the search drops to its own row. */}
     <div className="px-4 pt-4">
-    <header className="flex flex-wrap items-stretch border border-line bg-panel md:h-12 md:flex-nowrap">
+    <header className="flex flex-wrap items-stretch border border-line bg-panel lg:h-12 lg:flex-nowrap">
       <div className="flex h-12 shrink-0 items-center gap-2.5 border-e border-line ps-4 pe-5">
         <AppMark className="size-5 text-accent-text"/>
         <h1 className="type-heading-sm">Shift</h1>
       </div>
       <ProjectBar projects={projects}/>
-      <div className="order-last flex w-full items-center border-t border-line px-3 py-2 md:order-none md:w-auto md:min-w-0 md:flex-1 md:border-t-0 md:py-0">
-        <Input mode="search" value={search} onValueChange={setSearch} placeholder="Search the library" aria-label="Search the library" shortcut="/" className="md:max-w-md"/>
+      <div className="order-last flex w-full items-center border-t border-line px-3 py-2 lg:order-none lg:w-auto lg:min-w-0 lg:flex-1 lg:border-t-0 lg:py-0">
+        <Input mode="search" value={search} onValueChange={setSearch} placeholder="Search the library" aria-label="Search the library" shortcut="/" className="lg:max-w-md"/>
       </div>
-      <div className="ms-auto flex h-12 items-center gap-3 border-s border-line px-4 md:ms-0">
+      <div className="ms-auto flex h-12 shrink-0 items-center gap-3 border-s border-line px-4 lg:ms-0">
         <Status size="sm" status={dj.recording || live ? "running" : "idle"}><TextSwap>{dj.recording ? "Recording" : live ? "Live" : "Ready"}</TextSwap></Status>
         {dj.recording && <Digits value={formatTime(dj.recordSeconds)} className="type-code-sm text-text-1"/>}
       </div>

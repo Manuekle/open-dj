@@ -164,13 +164,17 @@ export function RhythmGame() {
         <div className="ms-auto flex items-center border-s border-line px-4"><Status size="sm" status={charting ? "running" : "idle"}>{charting ? "Charting" : song ? "Ready" : "Pick a track"}</Status></div>
       </header>
     </div>
-    <main className="grid gap-4 p-4 lg:grid-cols-3">
+    <main className="grid grid-cols-1 gap-4 p-4 lg:grid-cols-3">
       <section className="border border-line bg-panel lg:col-span-2" aria-labelledby="songs">
         <div className="flex h-12 items-center justify-between border-b border-line px-4">
           <h2 id="songs" className="type-heading-sm">Songs</h2>
           <Button variant="secondary" size="sm" onClick={() => fileInput.current?.click()}><Icon icon={Upload}/>Upload a track</Button>
-          <Input ref={fileInput} type="file" accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac,.aac" className="sr-only" tabIndex={-1} aria-label="Audio file"
-            onChange={e => { const f = e.currentTarget.files?.[0]; e.currentTarget.value = ""; if (f) pick({ key: `file:${f.name}:${f.size}`, title: f.name.replace(/\.[^.]+$/, ""), artist: "Uploaded file", blob: f, bpm: null }); }}/>
+          {/* The Input draws its own absolutely sized field wrapper, so the hiding has to be on a wrapper around it: left in
+              the flex header it sits 40px in and pushes the page wider than a phone. */}
+          <div className="sr-only" aria-hidden>
+            <Input ref={fileInput} type="file" accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac,.aac" tabIndex={-1} aria-label="Audio file"
+              onChange={e => { const f = e.currentTarget.files?.[0]; e.currentTarget.value = ""; if (f) pick({ key: `file:${f.name}:${f.size}`, title: f.name.replace(/\.[^.]+$/, ""), artist: "Uploaded file", blob: f, bpm: null }); }}/>
+          </div>
         </div>
         {tracks === null ? <p className="p-4 type-body-sm text-text-3">Loading the library…</p>
           : tracks.length === 0 ? <p className="p-4 type-body-sm text-text-2">The library is empty. Upload a track here, or add some on the decks page; they show up in this list.</p>
