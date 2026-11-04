@@ -21,7 +21,9 @@ export const Countdown = memo(function Countdown({ mediaTime, deck, outAt, rate,
     const el = text.current;
     if (!el) return;
     if (deck === null || outAt === null) { el.textContent = "-"; return; }
-    const write = () => { el.textContent = formatDue(dueIn(outAt, mediaTime(deck), rate)); };
+    // The figure changes a few times a second at most: the text node is only written when it does, not 60 times a second.
+    let shown = "";
+    const write = () => { const next = formatDue(dueIn(outAt, mediaTime(deck), rate)); if (next !== shown) { el.textContent = shown = next; } };
     write();
     if (!playing) return;
     let raf = requestAnimationFrame(function tick() { write(); raf = requestAnimationFrame(tick); });

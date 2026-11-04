@@ -17,7 +17,7 @@ import { autoTrim, foldMultiple, movesStems, planRatio, presetOf, shapeOfPlan, s
 import { mixFeatures } from "@/lib/mix-features";
 import { DEFAULT_SMART_STYLE, planTransition, scorePlan, styleKey, styleOptions, withStyle, type Evaluation, type PlannerResult, type SmartStyle } from "@/lib/transition-planner";
 import { clearTracks, loadMixes, loadTracks, removeMix, removeTrack, saveMix, saveTrack } from "@/lib/storage";
-import { readTags, shrinkCover } from "@/lib/tags";
+import { coverNeedsShrink, readTags, shrinkCover } from "@/lib/tags";
 import { toast } from "@/components/sodium/ui/toast";
 import { downloadFromLink, onDownloaded, onStemsDone, startStemJob, stemToastId, takePendingImports, useStemProgress } from "@/lib/background-jobs";
 import { makeDeck, type DeckId, type DeckState, type EffectName, type Session, type StoredMix, type StoredTrack, type Track, type TransitionPlan, type TransitionState } from "@/lib/types";
@@ -250,12 +250,15 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
           const stale = staleness(track), unmapped = !!track.stems && !track.stemEnergy;
           // Tracks saved before content fingerprints existed get one here, once, so an import can recognise them.
           const needsFingerprint = !track.fingerprint;
-          if (!stale && !unmapped && !needsFingerprint) continue;
+          // Covers stored before they were re-encoded are shrunk to WebP once, so the library reads and decodes less.
+          const heavyCover = !!track.cover && coverNeedsShrink(track.cover);
+          if (!stale && !unmapped && !needsFingerprint && !heavyCover) continue;
           try {
             const result: Partial<StoredTrack> = stale === "all" ? await analyzeFile(track.blob)
               : stale === "features" ? await analyzeRhythmAndStructure(track.blob, track.bpm) : {};
             if (unmapped) result.stemEnergy = await analyzeStems(track.stems!).catch(() => undefined);
             if (needsFingerprint) result.fingerprint = await fingerprintOf(track.blob).catch(() => undefined);
+            const cover = heavyCover ? await shrinkCover(track.cover!) : undefined;
             if (!alive) return;
             // Analysis can take long enough for the DJ to edit this track or delete it. Merge onto the latest version
             // so saving the results keeps those edits (and the newly computed fingerprint) instead of restoring `track`.
@@ -264,6 +267,11 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
             // A tempo the DJ set by hand is theirs: a new analysis does not replace it.
             if (latest.tempoManual) { delete result.bpm; delete result.pulse; delete result.firstBeat; delete result.rhythm; }
             const updated: Track = { ...latest, ...result };
+            // Only when the DJ has not replaced the cover meanwhile.
+            if (cover && cover !== track.cover && latest.cover === track.cover) {
+              if (latest.coverUrl) URL.revokeObjectURL(latest.coverUrl);
+              updated.cover = cover; updated.coverUrl = URL.createObjectURL(cover);
+            }
             tracksRef.current = tracksRef.current.map(t => t.id === track.id ? updated : t);
             setTracks(prev => prev.map(t => t.id === track.id ? updated : t));
             await saveTrack(toStored(updated)).catch(() => {});
@@ -477,6 +485,7 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
         }
         const guess = inferName(file.name);
         const tags = await readTags(file);
+        if (tags.cover) tags.cover = await shrinkCover(tags.cover);
         const meta = { title: tags.title ?? guess.title, artist: tags.artist ?? guess.artist, album: tags.album, year: tags.year, genre: tags.genre };
         let analysis: Partial<Analysis> & Pick<StoredTrack, "analysisFailed"> & { duration: number; peaks: number[]; bpm: number | null } = { duration: 0, peaks: [], bpm: null };
         try { analysis = await analyzeFile(file); } catch {

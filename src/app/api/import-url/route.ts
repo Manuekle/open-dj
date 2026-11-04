@@ -4,8 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 /* Imports one track from a URL, run on the machine serving the app: yt-dlp (the maintained youtube-dl fork) downloads the
-   best audio as MP3, and ffmpeg cuts it to the asked range. POST { url, start?, end? } answers the MP3 as the body, its
-   file name in the x-file-name header (percent-encoded), so the client imports it like a dropped file.
+   best audio stream as it is published, with no re-encoding, and ffmpeg cuts it to the asked range by copying the stream.
+   Transcoding to MP3 would add a second lossy generation and make the file larger (a V0 MP3 is near twice the size of
+   the AAC or Opus it came from). AAC in M4A is preferred because every browser plays it; Opus or MP3 are taken when that
+   is all the site offers. POST { url, start?, end? } answers the audio as the body, its file name in the x-file-name
+   header (percent-encoded) and its type in content-type, so the client imports it like a dropped file.
    Only download audio you have the rights to: public domain, Creative Commons, or your own. */
 
 export const dynamic = "force-dynamic";
@@ -26,6 +29,12 @@ function run(cmd: string, args: string[]) {
     child.on("close", code => code === 0 ? resolve() : reject(new Error(tail.trim().split("\n").pop() || `${path.basename(cmd)} exited with ${code}`)));
   });
 }
+
+/** Audio containers yt-dlp may hand back, with the type the browser expects for each. */
+const TYPES: Record<string, string> = {
+  ".m4a": "audio/mp4", ".mp4": "audio/mp4", ".aac": "audio/aac", ".opus": "audio/ogg", ".ogg": "audio/ogg",
+  ".webm": "audio/webm", ".mp3": "audio/mpeg", ".flac": "audio/flac", ".wav": "audio/wav",
+};
 
 /** Seconds from a timestamp, or null when it is not one. */
 function seconds(stamp: string): number | null {
@@ -49,22 +58,27 @@ export async function POST(request: Request) {
 
   const dir = await mkdtemp(path.join(tmpdir(), "open-dj-url-"));
   try {
-    // "--" ends the options, so a link can never be read as one. A playlist link downloads only its video.
-    await run(YTDLP, ["--no-playlist", "--no-progress", "-x", "--audio-format", "mp3", "--audio-quality", "0",
+    // "--" ends the options, so a link can never be read as one. A playlist link downloads only its video. -x keeps
+    // the audio stream of a video as it is: no --audio-format, so nothing is transcoded.
+    await run(YTDLP, ["--no-playlist", "--no-progress", "-f", "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio/best", "-x",
       "--max-filesize", String(MAX_BYTES), "--trim-filenames", "120", "-o", path.join(dir, "%(title)s.%(ext)s"), "--", url.toString()]);
-    const name = (await readdir(dir)).find(file => file.endsWith(".mp3"));
+    const name = (await readdir(dir)).find(file => path.extname(file).toLowerCase() in TYPES);
     if (!name) return Response.json({ error: "No audio came back from that link." }, { status: 502 });
+    const ext = path.extname(name), type = TYPES[ext.toLowerCase()];
 
     let file = path.join(dir, name);
-    if (from > 0 || to !== null) {
+    const trimmed = from > 0 || to !== null;
+    if (trimmed) {
       const cut = path.join(dir, `cut-${name}`);
-      await run(FFMPEG, ["-y", "-loglevel", "error", "-i", file, "-ss", String(from), ...(to !== null ? ["-to", String(to)] : []), "-c:a", "libmp3lame", "-q:a", "0", cut]);
+      // A stream copy: the cut lands on the nearest audio frame (a few milliseconds) and the quality is untouched.
+      await run(FFMPEG, ["-y", "-loglevel", "error", "-ss", String(from), "-i", file, ...(to !== null ? ["-t", String(to - from)] : []),
+        "-map", "0:a:0", "-c:a", "copy", cut]);
       file = cut;
     }
     const audio = await readFile(file);
     if (!audio.byteLength) return Response.json({ error: "That range holds no audio." }, { status: 422 });
-    const out = from > 0 || to !== null ? name.replace(/\.mp3$/, " - TRIM.mp3") : name;
-    return new Response(new Uint8Array(audio), { headers: { "content-type": "audio/mpeg", "content-length": String(audio.byteLength), "x-file-name": encodeURIComponent(out) } });
+    const out = trimmed ? `${name.slice(0, -ext.length)} - TRIM${ext}` : name;
+    return new Response(new Uint8Array(audio), { headers: { "content-type": type, "content-length": String(audio.byteLength), "x-file-name": encodeURIComponent(out) } });
   } catch (e) {
     return Response.json({ error: e instanceof Error ? e.message : "Import failed." }, { status: 502 });
   } finally {

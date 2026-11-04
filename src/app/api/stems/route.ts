@@ -18,7 +18,7 @@ const FFMPEG = process.env.FFMPEG_BIN ?? "ffmpeg";
 const MAX_BYTES = 150 * 1024 * 1024;
 /** A job nobody asked about for this long is dropped with its files. */
 const STALE_MS = 30 * 60 * 1000;
-const EXTENSION = /^\.(mp3|wav|m4a|ogg|flac|aac)$/;
+const EXTENSION = /^\.(mp3|wav|m4a|mp4|ogg|opus|webm|flac|aac)$/;
 
 type Job = { state: "queued" | "running" | "done" | "failed"; progress: number; error?: string; dir: string; touched: number };
 // On globalThis, so a dev-server reload keeps the jobs already running.

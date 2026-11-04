@@ -12,9 +12,12 @@ html[data-input="pointer"] .sodium [data-slot="slider-thumb"] { outline: none; }
 /* Nothing in the console starts a native text selection or image drag mid-gesture. */
 .sodium [data-slot="slider"], .sodium [data-slot="segmented-control"] { -webkit-user-select: none; user-select: none; }
 
-/* Waveform: --p (0..1) is tweened by GSAP. */
-.wave-progress { clip-path: inset(0 calc((1 - var(--p, 0)) * 100%) 0 0); }
-.wave-head { left: calc(var(--p, 0) * 100%); }
+/* Waveform: --p (0..1) is tweened by GSAP. The played part is revealed with transforms only, never clip-path or left:
+   the box slides left by what is still to play and the glowing bars inside slide back by as much, so they stay put.
+   Each is its own compositor layer, so the drop-shadow glow is rasterised once per track, not on every frame. The
+   playhead rides on the right edge of a box that slides the same way. */
+.wave-progress, .wave-head { transform: translateX(calc((var(--p, 0) - 1) * 100%)); will-change: transform; }
+.wave-fill { transform: translateX(calc((1 - var(--p, 0)) * 100%)); will-change: transform; }
 
 /* Palette: Erie Black, Narvik, Eagle, Fire Bush, Jaffa and Sorbus, written into Sodium's dark tokens so every component
    picks it up through its usual classes.

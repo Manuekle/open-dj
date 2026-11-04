@@ -51,7 +51,8 @@ function Waveform({ id, peaks, positions, duration, enabled, markers, regions, o
   };
   const steps: Record<string, number> = { ArrowRight: 5, ArrowUp: 5, ArrowLeft: -5, ArrowDown: -5, PageUp: 30, PageDown: -30 };
   const number = id === "A" ? 1 : 2;
-  return <div ref={root} className="relative h-16 bg-well">
+  // overflow-hidden: the played layer rests one width to the left at 0%, and must not spill over a neighbouring deck.
+  return <div ref={root} className="relative h-16 overflow-hidden bg-well">
     {enabled ? <div role="slider" tabIndex={0} aria-label={`Seek deck ${number}`} aria-valuemin={0} aria-valuemax={Math.round(duration)}
       aria-valuenow={Math.round(position)} aria-valuetext={`${formatTime(position)} of ${formatTime(duration)}`}
       aria-describedby={regions.length ? `${id}-mix-points` : undefined}
@@ -66,12 +67,12 @@ function Waveform({ id, peaks, positions, duration, enabled, markers, regions, o
         if (by) { e.preventDefault(); onStep(by); }
       }}>
       <div className="text-line absolute inset-0"><Bars peaks={peaks}/></div>
-      <div className="wave-progress glow text-data-1 absolute inset-0"><Bars peaks={peaks}/></div>
+      <div className="wave-progress pointer-events-none absolute inset-0 overflow-hidden"><div className="wave-fill glow text-data-1 absolute inset-0"><Bars peaks={peaks}/></div></div>
       {regions.map(r => <div key={r.label} title={r.label} style={{ "--from": `${r.from * 100}%`, "--span": `${Math.max(0, r.to - r.from) * 100}%` } as React.CSSProperties}
         className={cn("pointer-events-none absolute inset-y-0 left-(--from) w-(--span) bg-current opacity-15", r.tone)}/>)}
       {markers.map(m => <div key={m.label} title={m.label} style={{ "--at": `${m.at * 100}%` } as React.CSSProperties}
         className={cn("glow absolute inset-y-0 left-(--at) w-0.5", m.tone)}><span className="block size-full bg-current"/></div>)}
-      <div className="wave-head absolute inset-y-0 w-px bg-text-1"/>
+      <div className="wave-head pointer-events-none absolute inset-0"><span className="absolute inset-y-0 right-0 w-px bg-text-1"/></div>
       {regions.length > 0 && <span id={`${id}-mix-points`} className="sr-only">{regions.map(r => r.label).join(". ")}</span>}
     </div> : <>
       <div className="text-line absolute inset-0" aria-hidden><Bars peaks={peaks}/></div>

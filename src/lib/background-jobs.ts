@@ -133,7 +133,9 @@ export async function downloadFromLink(url: string, start: string, end: string):
       toast.update(toastId, "fail", message ?? "Could not import that link.");
       return false;
     }
-    const name = decodeURIComponent(res.headers.get("x-file-name") ?? "") || "download.mp3";
+    const name = decodeURIComponent(res.headers.get("x-file-name") ?? "") || "download.m4a";
+    // The server keeps the audio in the format the site published it in (usually AAC in M4A), not always MP3.
+    const type = res.headers.get("content-type")?.split(";")[0] || "audio/mp4";
     const total = Number(res.headers.get("content-length")) || 0;
     let blob: Blob;
     if (res.body && total) {
@@ -146,9 +148,9 @@ export async function downloadFromLink(url: string, start: string, end: string):
         parts.push(value as Uint8Array<ArrayBuffer>); got += value.byteLength;
         toast.update(toastId, "loading", "Downloading from link", { description: percent(got / total) });
       }
-      blob = new Blob(parts, { type: "audio/mpeg" });
+      blob = new Blob(parts, { type });
     } else blob = await res.blob();
-    const file = new File([blob], name, { type: "audio/mpeg" });
+    const file = new File([blob], name, { type });
     if (importListeners.size) {
       toast.dismiss(toastId);
       importListeners.forEach(l => l([file]));

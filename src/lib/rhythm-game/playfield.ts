@@ -141,7 +141,8 @@ export class Run {
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.clientWidth, h = canvas.clientHeight;
     if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
-    const g = canvas.getContext("2d");
+    // Opaque: every frame paints the page colour first, so the compositor need not blend the canvas with what is under it.
+    const g = canvas.getContext("2d", { alpha: false });
     if (!g) return;
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.fillStyle = c.page; g.fillRect(0, 0, w, h);

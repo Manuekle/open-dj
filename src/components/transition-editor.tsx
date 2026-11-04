@@ -205,11 +205,13 @@ function Editor({ mediaTime, plan, from, to, fromDeck, toDeck, decks, locked, sy
       const bottomProgress = f.syncPlayheads ? topProgress : (mediaTime(toId) - f.bottomStart) / f.bottomWidth;
       place(topHead.current, topProgress, f.topPlaying);
       place(bottomHead.current, bottomProgress, f.bottomPlaying);
-      raf = requestAnimationFrame(tick);
     };
-    raf = requestAnimationFrame(tick);
+    // Nothing moves while both decks are stopped: draw once (which hides the heads) and do not keep a loop running.
+    if (!fromPlaying && !toPlaying) { tick(); return; }
+    const loop = () => { tick(); raf = requestAnimationFrame(loop); };
+    raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [mediaTime, fromId, toId]);
+  }, [mediaTime, fromId, toId, fromPlaying, toPlaying]);
 
   const set = (patch: Partial<TransitionPlan>) => { const next = { ...plan, ...patch }; onChange({ ...next, preset: presetOf(next) }); };
   const setCurve = (curve: CustomCurve) => set({ volume: "custom", curve });

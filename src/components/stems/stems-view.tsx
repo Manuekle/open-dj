@@ -181,12 +181,15 @@ export function StemsView() {
     return () => { el.pause(); el.removeAttribute("src"); el.load(); void ctx.close(); media.current = null; context.current = null; };
   }, []);
 
+  // Writes only what changed: the playhead moves every frame, the clock text once a second.
+  const drawn = useRef({ left: "", time: "" });
   const paint = useCallback(() => {
     const el = media.current;
     if (!el) return;
     const total = el.duration || 0;
-    if (playhead.current) playhead.current.style.left = total ? `${Math.min(100, el.currentTime / total * 100)}%` : "0%";
-    if (clock.current) clock.current.textContent = formatTime(el.currentTime);
+    const left = total ? `${Math.min(100, el.currentTime / total * 100)}%` : "0%", time = formatTime(el.currentTime);
+    if (playhead.current && drawn.current.left !== left) { playhead.current.style.left = left; drawn.current.left = left; }
+    if (clock.current && drawn.current.time !== time) { clock.current.textContent = time; drawn.current.time = time; }
   }, []);
 
   useEffect(() => {

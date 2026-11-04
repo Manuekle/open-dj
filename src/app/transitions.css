@@ -83,7 +83,8 @@
     transform var(--text-swap-dur) var(--text-swap-ease),
     filter    var(--text-swap-dur) var(--text-swap-ease),
     opacity   var(--text-swap-dur) var(--text-swap-ease);
-  will-change: transform, filter, opacity;
+  /* No permanent will-change: the browser promotes the element while the transition runs, and a standing layer per
+     label (there are dozens on the console) only holds GPU memory. */
 }
 .t-text-swap.is-exit {
   transform: translateY(calc(var(--text-swap-translate-y) * -1));
@@ -120,7 +121,7 @@
 }
 .t-digit {
   display: inline-block;
-  will-change: transform, opacity, filter;
+  /* Promoted only while the pop-in animation runs, not for the page's life. */
 }
 .t-digit-group.is-animating .t-digit {
   animation: t-digit-pop-in var(--digit-dur) var(--digit-ease) both;
@@ -146,7 +147,7 @@
   transition:
     width  var(--resize-dur) var(--resize-ease),
     height var(--resize-dur) var(--resize-ease);
-  will-change: width, height;
+  /* No will-change: width and height cannot be composited, so a hint here only costs a layer. */
 }
 
 @media (prefers-reduced-motion: reduce) {

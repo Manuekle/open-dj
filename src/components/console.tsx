@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { gsap, useGSAP } from "@/lib/gsap";
 import { cn } from "@/lib/sodium/utils";
 import { EFFECTS, STEMS, formatTime, type DeckId, type DeckState, type EffectName, type Track } from "@/lib/types";
@@ -90,18 +90,26 @@ export function Knob({ label, value, min, max, reset = 0, format = String, tone 
   </Tooltip>;
 }
 
+/** The platter's ticks and mark, static: the jog turns the layer that holds it. */
+const Platter = memo(function Platter() {
+  return <svg viewBox="0 0 200 200" className="size-full overflow-visible">
+    {Array.from({ length: 72 }, (_, i) => <line key={i} x1={100} y1={i % 6 ? 8 : 4} x2={100} y2={16} stroke="currentColor" strokeWidth={1}
+      transform={`rotate(${i * 5} 100 100)`} className="text-line-control"/>)}
+    <line x1={100} y1={4} x2={100} y2={42} stroke="currentColor" strokeWidth={3} className="glow text-data-1"/>
+  </svg>;
+});
+
 /* A turntable platter in Sodium's line language: 1px rules, the deck's data tone for the mark. Drag, the arrow keys or,
    once it has focus, the scroll wheel nudge the track. */
 function Jog({ id, deck, positions, enabled, onNudge }: { id: DeckId; deck: DeckState; positions: DeckPositions; enabled: boolean; onNudge: (seconds: number) => void }) {
   // Whole seconds: the readout and the slider values show no finer, so the platter re-renders once a second.
   const position = useDeckPosition(positions, id, 1);
   const root = useRef<HTMLDivElement>(null);
-  const platter = useRef<SVGGElement>(null);
+  const platter = useRef<HTMLDivElement>(null);
   const live = useRef({ playing: false, rate: 1, angle: 0 });
   const prev = useRef<{ x: number; y: number } | null>(null);
   useEffect(() => { live.current.playing = deck.playing; live.current.rate = deck.rate; }, [deck.playing, deck.rate]);
   useGSAP(() => {
-    gsap.set(platter.current, { svgOrigin: "100 100" });
     const setRotation = gsap.quickSetter(platter.current, "rotation", "deg");
     const tick = (_time: number, delta: number) => {
       if (!live.current.playing) return;
@@ -133,7 +141,7 @@ function Jog({ id, deck, positions, enabled, onNudge }: { id: DeckId; deck: Deck
     <TooltipTrigger render={<div ref={root}/>} role="slider" tabIndex={enabled ? 0 : -1} aria-disabled={!enabled || undefined}
       aria-label={`${deckName(id)} jog wheel`} aria-valuemin={0} aria-valuemax={Math.round(deck.duration)} aria-valuenow={Math.round(position)}
       aria-valuetext={enabled ? `${formatTime(position)} of ${formatTime(deck.duration)}` : "No track"}
-      className={cn("aspect-square w-full max-w-md touch-none select-none", enabled ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed opacity-60")} draggable={false}
+      className={cn("relative aspect-square w-full max-w-md touch-none select-none", enabled ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed opacity-60")} draggable={false}
       onPointerDown={e => {
         if (!enabled || e.button !== 0) return;
         e.preventDefault(); // no text selection or native drag to steal the gesture
@@ -160,14 +168,14 @@ function Jog({ id, deck, positions, enabled, onNudge }: { id: DeckId; deck: Deck
         e.preventDefault();
         onNudge(dir * (e.shiftKey ? 0.1 : 0.5));
       }}>
-      <svg viewBox="0 0 200 200" className="size-full overflow-visible" aria-hidden>
+      {/* The spinning part is an HTML layer turned by a CSS transform: the compositor rotates its pixels, so the 72 ticks
+          and the glowing mark are drawn once, not repainted on every frame while the deck plays. */}
+      <div ref={platter} className="absolute inset-0 will-change-transform" aria-hidden>
+        <Platter/>
+      </div>
+      <svg viewBox="0 0 200 200" className="relative size-full overflow-visible" aria-hidden>
         <circle cx={100} cy={100} r={97} fill="none" stroke="currentColor" strokeWidth={deck.playing ? 2 : 1} className={deck.playing ? "glow text-data-1" : "text-line-control"}/>
         <circle cx={100} cy={100} r={58} fill="none" stroke="currentColor" strokeWidth={1} className="text-line"/>
-        <g ref={platter}>
-          {Array.from({ length: 72 }, (_, i) => <line key={i} x1={100} y1={i % 6 ? 8 : 4} x2={100} y2={16} stroke="currentColor" strokeWidth={1}
-            transform={`rotate(${i * 5} 100 100)`} className="text-line-control"/>)}
-          <line x1={100} y1={4} x2={100} y2={42} stroke="currentColor" strokeWidth={3} className="glow text-data-1"/>
-        </g>
         <text x={100} y={96} textAnchor="middle" fill="currentColor" className="type-micro text-text-3">Remain</text>
         <text x={100} y={114} textAnchor="middle" fill="currentColor" className="type-code text-text-1">-{formatTime(remaining)}</text>
       </svg>

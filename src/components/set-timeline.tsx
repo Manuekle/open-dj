@@ -70,9 +70,10 @@ export function SetTimeline({ entries, liveDeck, rate, playing, mediaTime, posit
   const scroller = useRef<HTMLDivElement>(null), head = useRef<HTMLDivElement>(null);
   const live = useRef({ liveDeck, total, playing });
   useEffect(() => { live.current = { liveDeck, total, playing }; });
+  // The loop runs only while the set plays; a paused deck draws the playhead once for each change of position.
   useEffect(() => {
     let raf = 0, last = -1, drawn = -1;
-    const tick = () => {
+    const draw = () => {
       const { liveDeck: deck, total: span, playing: on } = live.current;
       const el = head.current, box = scroller.current;
       if (el && deck && span > 0) {
@@ -87,11 +88,12 @@ export function SetTimeline({ entries, liveDeck, rate, playing, mediaTime, posit
         }
         if (at !== drawn) { el.style.setProperty("--at", `${at * 100}%`); drawn = at; }
       }
-      raf = requestAnimationFrame(tick);
     };
+    if (!playing) { draw(); return; }
+    const tick = () => { draw(); raf = requestAnimationFrame(tick); };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [mediaTime]);
+  }, [mediaTime, playing, liveDeck, total, position]);
 
   if (!entries.length) return null;
   const now = position;
