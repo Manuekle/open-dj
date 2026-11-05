@@ -1,3 +1,4 @@
+import "@/lib/legacy-keys";
 import { detectPitch, hzToMidi, NOTE_NAMES } from "@/lib/autotune";
 
 /* A singer's range and a song's, and the key change that puts the song in the singer's range.
@@ -96,8 +97,8 @@ export async function pitchOfBlock(block: Float32Array, sampleRate: number): Pro
   return voiced.length >= Math.max(1, f0.length / 2) ? voiced[voiced.length >> 1] : 0;
 }
 
-const VOICE_KEY = "open-dj:voice-range";
-const SONG_KEY = (id: string) => `open-dj:song-range:v1:${id}`;
+const VOICE_KEY = "shift:voice-range";
+const SONG_KEY = (id: string) => `shift:song-range:v1:${id}`;
 
 function read(key: string): VocalRange | null {
   try {

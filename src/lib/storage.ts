@@ -1,19 +1,67 @@
 import type { Project, StoredMix, StoredTrack } from "@/lib/types";
-const DB_NAME = "open-dj-local-v1";
+const DB_NAME = "shift-local-v1";
+/* The database's name before the app was renamed from Open DJ to Shift. */
+const LEGACY_DB = "open-dj-local-v1";
 const VERSION = 2;
-function database(): Promise<IDBDatabase> {
+const STORES = ["tracks","mixes","projects"] as const;
+
+/** Opens a database. With mustExist, a database that is not there is not created: the open is aborted and null comes back. */
+function openDb(name: string, version?: number, mustExist = false): Promise<IDBDatabase | null> {
   return new Promise((resolve,reject) => {
-    if (!("indexedDB" in window)) { reject(new Error("IndexedDB is unavailable")); return; }
-    const req = indexedDB.open(DB_NAME, VERSION);
-    req.onupgradeneeded = () => {
+    const req = version === undefined ? indexedDB.open(name) : indexedDB.open(name, version);
+    req.onupgradeneeded = e => {
+      if (mustExist) { if (e.oldVersion === 0) req.transaction?.abort(); return; }
       const db = req.result;
-      if (!db.objectStoreNames.contains("tracks")) db.createObjectStore("tracks",{keyPath:"id"});
-      if (!db.objectStoreNames.contains("mixes")) db.createObjectStore("mixes",{keyPath:"id"});
-      if (!db.objectStoreNames.contains("projects")) db.createObjectStore("projects",{keyPath:"id"});
+      for (const store of STORES) if (!db.objectStoreNames.contains(store)) db.createObjectStore(store,{keyPath:"id"});
     };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = e => { if (mustExist) { e.preventDefault(); resolve(null); } else reject(req.error); };
+  });
+}
+function readAll(db: IDBDatabase, store: string): Promise<unknown[]> {
+  return new Promise((resolve,reject) => {
+    const req = db.transaction(store,"readonly").objectStore(store).getAll();
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
+}
+
+/* Once per page: copy every row of the old database into the new one, then delete the old one. A row the new database
+   already has is kept as it is. If anything fails the old database stays, and the next page load tries again. */
+let migration: Promise<void> | undefined;
+function migrateLegacy(): Promise<void> {
+  return migration ??= (async () => {
+    const old = await openDb(LEGACY_DB, undefined, true);
+    if (!old) return;
+    let stores: string[], rows: unknown[][];
+    try {
+      stores = STORES.filter(s => old.objectStoreNames.contains(s));
+      rows = await Promise.all(stores.map(s => readAll(old, s)));
+    } finally { old.close(); }
+    if (stores.length) {
+      const db = await openDb(DB_NAME, VERSION);
+      if (!db) return;
+      try {
+        await new Promise<void>((resolve,reject) => {
+          const tx = db.transaction(stores,"readwrite");
+          stores.forEach((s,i) => {
+            const store = tx.objectStore(s);
+            for (const row of rows[i]) { const req = store.add(row); req.onerror = e => { e.preventDefault(); e.stopPropagation(); }; }
+          });
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error);
+        });
+      } finally { db.close(); }
+    }
+    indexedDB.deleteDatabase(LEGACY_DB);
+  })().catch(() => {});
+}
+
+async function database(): Promise<IDBDatabase> {
+  if (!("indexedDB" in window)) throw new Error("IndexedDB is unavailable");
+  await migrateLegacy();
+  return (await openDb(DB_NAME, VERSION))!;
 }
 async function query<T>(table: "tracks"|"mixes"|"projects", method: "getAll"|"put"|"delete"|"clear", value?: unknown): Promise<T> {
   const db = await database();

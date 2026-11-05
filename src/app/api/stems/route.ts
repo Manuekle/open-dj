@@ -71,7 +71,7 @@ export async function POST(request: Request) {
   const ext = EXTENSION.test(path.extname(name).toLowerCase()) ? path.extname(name).toLowerCase() : ".audio";
 
   const id = crypto.randomUUID();
-  const dir = await mkdtemp(path.join(tmpdir(), "open-dj-stems-"));
+  const dir = await mkdtemp(path.join(tmpdir(), "shift-stems-"));
   const input = path.join(dir, `track${ext}`);
   await writeFile(input, Buffer.from(body));
   const job: Job = { state: "queued", progress: 0, dir, touched: Date.now() };
