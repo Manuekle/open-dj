@@ -9,3 +9,8 @@ npm-debug.log*
 .demucs
 .whisper
 data
+
+# Mac app
+dist-desktop
+desktop/bin/*
+!desktop/bin/.gitkeep

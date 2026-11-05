@@ -1,0 +1,42 @@
+# Shift for Mac (npm run desktop:build): a .dmg for Apple Silicon in dist-desktop/. The app is the folder desktop/
+# (its main process); the Next.js standalone server and any bundled tools go next to it in Contents/Resources.
+appId: dev.manuekle.shift
+productName: Shift
+copyright: Copyright © 2026 Manuekle
+electronVersion: 45.2.3
+directories:
+  app: desktop
+  output: dist-desktop
+  buildResources: desktop/build
+# Only the main process: the server brings its own node_modules (.next/standalone), so the repo's must stay out.
+files:
+  - main.cjs
+  - window.css
+  - window-lights.css
+  - package.json
+  - "!**/node_modules/**"
+npmRebuild: false
+publish: null
+extraResources:
+  - from: desktop/bin
+    to: bin
+    filter: ["**/*"]
+asar: true
+# Copies the Next.js standalone server into Resources/server (electron-builder drops node_modules from extraResources).
+afterPack: desktop/after-pack.cjs
+mac:
+  target:
+    - target: dmg
+      arch: arm64
+  category: public.app-category.music
+  # Icon Composer file (Liquid Glass on macOS 26+); electron-builder compiles it with Xcode 26+ actool.
+  icon: desktop/build/Shift.icon
+  minimumSystemVersion: "13.0"
+  # Signing: scripts/build-desktop.sh (ad-hoc, or a Developer ID from CSC_NAME / CSC_LINK).
+  hardenedRuntime: true
+  entitlements: desktop/build/entitlements.mac.plist
+  entitlementsInherit: desktop/build/entitlements.mac.plist
+  extendInfo:
+    NSMicrophoneUsageDescription: Shift listens to your voice for the voice scan and to follow the lyrics as you sing.
+dmg:
+  title: Shift

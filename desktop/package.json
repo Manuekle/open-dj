@@ -1,0 +1,9 @@
+{
+  "name": "shift",
+  "productName": "Shift",
+  "version": "0.1.0",
+  "description": "A DJ workstation that runs on your own machine.",
+  "author": "Manuekle",
+  "license": "MIT",
+  "main": "main.cjs"
+}

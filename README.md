@@ -30,6 +30,7 @@ Shift is built with Next.js, React, TypeScript and the Web Audio API. It splits 
 - [Pages](#pages)
 - [Configuration](#configuration)
 - [Running without Docker](#running-without-docker)
+- [Mac app](#mac-app)
 - [Development](#development)
 - [Project layout](#project-layout)
 - [Troubleshooting](#troubleshooting)
@@ -260,6 +261,40 @@ npm run dev
 ```
 
 Open http://localhost:3000. Stems, lyrics and AI are optional: without Demucs the Split buttons stay disabled, without Whisper (`npm run setup:whisper`) the Transcribe buttons do, and without Ollama the AI plan button does.
+
+## Mac app
+
+Shift also runs as a desktop app for Macs with Apple Silicon (macOS 13 or later). It is the same app: Electron opens a
+window on the Next.js server, which it runs itself, so the Mac needs no Node.js.
+
+```bash
+npm run desktop:build
+```
+Builds `dist-desktop/Shift-<version>-arm64.dmg`. Open it and drag Shift to Applications.
+
+The app keeps its backup, models and Demucs in `~/Library/Application Support/Shift` (Go > Show Data Folder). The tools
+come from Homebrew, so install the ones you want:
+
+```bash
+brew install ffmpeg yt-dlp whisper.cpp ollama
+```
+
+```bash
+npm run setup:stems -- --desktop
+```
+
+```bash
+npm run setup:whisper -- --desktop
+```
+These two put Demucs and the Whisper models in the app's folder instead of the repo. Executables placed in
+`desktop/bin` before a build (ffmpeg, yt-dlp, whisper-cli) go inside the app and win over Homebrew's.
+
+Signing: without a Developer ID the build is ad-hoc signed, so another Mac opens it the first time with right-click >
+Open. With one in the keychain, set `CSC_NAME` to its name (and `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and
+`APPLE_TEAM_ID` to notarize).
+
+To work on the app's window, `npm run desktop:dev` runs `next dev` inside it. If a dev server is already running in the
+folder, point the window at it instead: `SHIFT_DEV_URL=http://localhost:3000 npm run desktop:dev`.
 
 ## Development
 

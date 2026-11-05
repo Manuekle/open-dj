@@ -7,6 +7,9 @@
 # The route uses the most accurate model in .whisper/, so a smaller one fetched earlier can stay.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# SHIFT_DIR installs elsewhere: the Mac app looks in ~/Library/Application Support/Shift (npm run setup:whisper -- --desktop).
+[ "${1:-}" = "--desktop" ] && SHIFT_DIR="$HOME/Library/Application Support/Shift"
+mkdir -p "${SHIFT_DIR:-.}" && cd "${SHIFT_DIR:-.}"
 NAME="${WHISPER_MODEL_NAME:-large-v3}"
 command -v ffmpeg >/dev/null || { echo "Install ffmpeg first: brew install ffmpeg" >&2; exit 1; }
 if ! command -v whisper-cli >/dev/null; then

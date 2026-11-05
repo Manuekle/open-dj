@@ -1,0 +1,22 @@
+/* Injected by the Mac app only (desktop/main.cjs): the window has no title bar, so each room's header (Decks, Stems,
+   Studio, Karaoke, Rhythm) becomes it. It stays at the top while the page scrolls, it drags the window (its controls
+   still click), and a double-click on it zooms, as on any Mac title bar. */
+div:has(> header.border.bg-panel) {
+  position: sticky;
+  /* Stuck where it starts (under the body's 8px margin), so the header never moves out from the traffic lights; the
+     shadow covers that margin as the page scrolls under it. */
+  top: 8px;
+  /* Over everything on the page (piano keys, sticky cells, raised parts use --z-raised) but under the portalled layers
+     (dialogs, menus, tooltips, toasts, the drop layer), which use --z-overlay and must still cover it. */
+  z-index: calc(var(--z-overlay) - 1);
+  background-color: var(--page);
+  box-shadow: 0 -8px 0 var(--page);
+}
+header.border.bg-panel {
+  -webkit-app-region: drag;
+  -webkit-user-select: none;
+  user-select: none;
+}
+header.border.bg-panel :is(a, button, input, select, textarea, label, [role], [tabindex]) {
+  -webkit-app-region: no-drag;
+}

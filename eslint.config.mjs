@@ -21,5 +21,7 @@ export default defineConfig([
     },
   },
   ...sodium,
-  globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts", ".claude/**", ".agents/**", ".demucs/**", "sodium.eslint.config.mjs"]),
+  // The Mac app's main process and build hook are CommonJS run by Electron and electron-builder.
+  { files: ["desktop/**/*.cjs"], rules: { "@typescript-eslint/no-require-imports": "off" } },
+  globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts", ".claude/**", ".agents/**", ".demucs/**", "dist-desktop/**", "sodium.eslint.config.mjs"]),
 ]);
