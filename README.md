@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Manuekle/open-dj/actions/workflows/ci.yml"><img src="https://github.com/Manuekle/open-dj/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Manuekle/shift/actions/workflows/ci.yml"><img src="https://github.com/Manuekle/shift/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A522-339933.svg" alt="Node.js 22 or newer">
 </p>
@@ -42,7 +42,7 @@ Shift is built with Next.js, React, TypeScript and the Web Audio API. It splits 
 You need [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine with Compose), with at least 8 GB of memory for Docker and about 10 GB of free disk.
 
 ```bash
-git clone https://github.com/Manuekle/open-dj.git && cd open-dj && docker compose up -d --build
+git clone https://github.com/Manuekle/shift.git && cd shift && docker compose up -d --build
 ```
 
 Open http://localhost:3000.
