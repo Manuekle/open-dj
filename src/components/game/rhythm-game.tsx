@@ -1,6 +1,7 @@
 "use client";
 
-import Link from "next/link";
+// Room links sweep through glimm (next/link handles the click itself, so a document-level interceptor never sees it).
+import { TransitionLink as Link } from "glimm/next";
 import { useEffect, useRef, useState } from "react";
 import "@/lib/legacy-keys";
 import { loadTracks } from "@/lib/storage";

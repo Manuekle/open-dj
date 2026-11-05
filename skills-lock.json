@@ -19,6 +19,12 @@
       "skillPath": "skills/design-system-boss/SKILL.md",
       "computedHash": "6e11bbaedb2ff96ff95fba3c420a6c378ee74610ee6270f5de55c659b5d93a5c"
     },
+    "glimm": {
+      "source": "nomanjack/glimm-skill",
+      "sourceType": "github",
+      "skillPath": "skills/glimm/SKILL.md",
+      "computedHash": "cde124a70fe0f8f4ecd256d2c287eb54aa012cc8d26e67b567d29aec84e8795a"
+    },
     "migrate-design-system": {
       "source": "arla6ka/design.how",
       "sourceType": "github",

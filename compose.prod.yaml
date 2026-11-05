@@ -1,0 +1,31 @@
+# Production override: puts Caddy (automatic HTTPS + basic auth) in front of the app.
+#   docker compose -f compose.yaml -f compose.prod.yaml up -d --build
+# Needs SITE_DOMAIN, BASIC_AUTH_USER and BASIC_AUTH_HASH in .env (see docs/DEPLOY.md).
+services:
+  app:
+    # Only Caddy is reachable from outside: drop the localhost port mapping from compose.yaml.
+    ports: !reset []
+    environment:
+      SITE_URL: https://${SITE_DOMAIN:?set SITE_DOMAIN in .env}
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:?set SITE_DOMAIN in .env}
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:?set BASIC_AUTH_USER in .env}
+      BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:?set BASIC_AUTH_HASH in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

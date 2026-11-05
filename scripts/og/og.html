@@ -1,0 +1,177 @@
+<!doctype html>
+<!-- Source for the social preview card (docs/og.png, src/app/opengraph-image.png). Render with scripts/og/render.sh. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shift OG card</title>
+<style>
+@font-face{font-family:"Commit Mono";src:url("https://design.how/fonts/sodium/CommitMono-Regular.woff2") format("woff2");font-weight:400}
+@font-face{font-family:"Inter Display";src:url("https://design.how/fonts/sodium/InterDisplay-Regular.woff2") format("woff2");font-weight:400}
+:root{
+  --erie:#1e1e1d;--narvik:#e7e7d8;--eagle:#aeac95;--fire:#f09235;--jaffa:#ed762f;--sorbus:#ec6428;
+  --panel:#242423;--line:#363633;--line-faint:#2a2a28;--text-3:#83816f;
+  --sans:"Inter Display",ui-sans-serif,system-ui,sans-serif;
+  --mono:"Commit Mono",ui-monospace,Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1200px;height:630px;overflow:hidden}
+body{background:var(--erie);color:var(--narvik);font-family:var(--sans);-webkit-font-smoothing:antialiased;position:relative}
+/* Warm light pooled under the waveform, like a lit stage. */
+body::before{content:"";position:absolute;inset:0;
+  background:
+    radial-gradient(70% 55% at 50% 100%,rgb(237 118 47 / .16),transparent 70%),
+    radial-gradient(40% 40% at 88% 10%,rgb(231 231 216 / .035),transparent 70%)}
+/* Film grain, same tile as the landing page. */
+body::after{content:"";position:absolute;inset:0;z-index:9;pointer-events:none;opacity:.07;background-size:200px 200px;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n' x='0' y='0' width='100%25' height='100%25'><feTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 1.2 -0.1'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>")}
+.card{position:absolute;inset:0 48px;border-left:1px solid var(--line);border-right:1px solid var(--line);display:flex;flex-direction:column}
+.lbl{font-family:var(--mono);text-transform:uppercase;font-size:13px;letter-spacing:.09em;line-height:1}
+.t2{color:var(--eagle)}.t3{color:var(--text-3)}.acc{color:var(--fire)}
+.row{display:flex;align-items:center;gap:14px;padding:0 36px}
+.head{height:68px;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:12px}
+.brand svg{width:28px;height:28px}
+.brand .lbl{font-size:15px;letter-spacing:.14em}
+.sp{flex:1}
+.tag{display:inline-flex;align-items:center;gap:8px;height:28px;padding:0 11px;border:1px solid var(--line);font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--eagle);background:rgb(36 36 35 / .6)}
+.tag .dot{width:7px;height:7px;background:var(--fire);box-shadow:0 0 6px var(--fire),0 0 14px rgb(240 146 53 / .55)}
+.main{flex:1;display:flex;padding:44px 36px 0;gap:40px}
+h1{font-weight:400;font-size:82px;line-height:.98;letter-spacing:-.042em;max-width:15ch}
+h1 em{font-style:normal;color:var(--fire);text-shadow:0 0 40px rgb(240 146 53 / .25)}
+.specs{margin-left:auto;width:250px;padding-top:6px;display:flex;flex-direction:column}
+.specs div{display:flex;align-items:baseline;justify-content:space-between;height:40px;align-items:center;border-bottom:1px solid var(--line-faint)}
+.specs div:first-child{border-top:1px solid var(--line-faint)}
+.specs b{font-weight:400;font-family:var(--mono);font-size:15px;color:var(--narvik);letter-spacing:-.01em}
+.strip{position:relative;height:150px;border-top:1px solid var(--line);margin-top:auto}
+.strip canvas{position:absolute;inset:0;width:100%;height:100%}
+.strip .meta{position:absolute;top:12px;display:flex;gap:10px;align-items:center}
+.strip .meta.a{left:36px}.strip .meta.b{right:36px}
+.foot{height:56px;border-top:1px solid var(--line)}
+.foot .lbl{font-size:12.5px}
+.sep{width:4px;height:4px;background:var(--text-3)}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="row head">
+    <div class="brand">
+      <svg viewBox="26 24 460 460" aria-hidden="true">
+        <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f09235"/><stop offset="1" stop-color="#ec6428"/></linearGradient></defs>
+        <g fill="url(#g)">
+          <ellipse cx="79.1" cy="292.2" rx="104.3" ry="42.6" transform="rotate(77.9 79.1 292.2)"/>
+          <ellipse cx="188" cy="253.7" rx="207.4" ry="51" transform="rotate(80.8 188 253.7)"/>
+          <ellipse cx="324" cy="253.7" rx="207.4" ry="51" transform="rotate(99.2 324 253.7)"/>
+          <ellipse cx="432.9" cy="292.2" rx="104.3" ry="42.6" transform="rotate(102.1 432.9 292.2)"/>
+        </g>
+      </svg>
+      <span class="lbl">Shift</span>
+    </div>
+    <span class="sp"></span>
+    <span class="tag"><span class="dot"></span>Runs locally</span>
+    <span class="tag">Open source · MIT</span>
+  </div>
+
+  <div class="main">
+    <h1>A DJ workstation that runs on your <em>own machine.</em></h1>
+    <div class="specs">
+      <div><span class="lbl t3">Decks</span><b>02</b></div>
+      <div><span class="lbl t3">Stems</span><b>04</b></div>
+      <div><span class="lbl t3">Transitions</span><b>Auto</b></div>
+      <div><span class="lbl t3">Second opinion</span><b>Local AI</b></div>
+      <div><span class="lbl t3">Cloud</span><b class="acc">None</b></div>
+    </div>
+  </div>
+
+  <div class="strip">
+    <canvas id="wave"></canvas>
+    <div class="meta a"><span class="lbl acc">Deck A</span><span class="lbl t3">124.0 BPM · 8A</span></div>
+    <div class="meta b"><span class="lbl t3">122.0 BPM · 9A</span><span class="lbl">Deck B</span></div>
+  </div>
+
+  <div class="row foot">
+    <span class="lbl t2">manuekle.github.io/shift</span>
+    <span class="sp"></span>
+    <span class="lbl t3">Stems</span><span class="sep"></span>
+    <span class="lbl t3">Automix</span><span class="sep"></span>
+    <span class="lbl t3">Voice studio</span><span class="sep"></span>
+    <span class="lbl t3">Rhythm game</span>
+  </div>
+</div>
+
+<script>
+/* Two decks crossing: deck A (fire) fades out as deck B (narvik) fades in, on one beat grid, with a playhead at the mix point. */
+const c = document.getElementById("wave");
+const dpr = window.devicePixelRatio || 1;
+const W = c.clientWidth, H = c.clientHeight;
+c.width = W * dpr; c.height = H * dpr;
+const x = c.getContext("2d"); x.scale(dpr, dpr);
+
+let seed = 7;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const smooth = (t) => t * t * (3 - 2 * t);
+
+const mid = H * 0.6, bar = 2, gap = 1, step = bar + gap;
+const beat = 20; // px per beat
+
+// Beat grid: faint ticks every beat, brighter every bar.
+for (let i = 0, px = 0; px < W; i++, px = i * beat) {
+  x.fillStyle = i % 4 === 0 ? "rgba(231,231,216,.10)" : "rgba(231,231,216,.04)";
+  x.fillRect(Math.round(px), i % 4 === 0 ? 36 : 48, 1, H - (i % 4 === 0 ? 48 : 72));
+}
+
+// Smoothed noise plus a kick that decays after each beat: reads like a real track, not a comb.
+let lp = 0.5;
+function envelope(i, n, phase) {
+  const t = i / n;
+  const pos = ((i * step) / beat + phase) % 1;
+  const kick = Math.exp(-pos * 5);
+  const phrase = 0.62 + 0.38 * Math.sin(t * Math.PI * 2.4 + phase * 5);
+  lp += (rnd() - lp) * 0.45;
+  return Math.min(1, phrase * (0.34 + 0.4 * kick + 0.34 * lp));
+}
+
+const n = Math.floor(W / step);
+for (let i = 0; i < n; i++) {
+  const px = i * step, t = i / n;
+  const fadeA = 1 - smooth(Math.min(1, Math.max(0, (t - 0.32) / 0.42)));
+  const fadeB = smooth(Math.min(1, Math.max(0, (t - 0.26) / 0.42)));
+  const a = envelope(i, n, 0) * fadeA, b = envelope(i, n, 0.5) * fadeB;
+  const amp = H * 0.44;
+  if (a > 0.01) {
+    const g = x.createLinearGradient(0, mid - amp * a, 0, mid);
+    g.addColorStop(0, "#f09235"); g.addColorStop(1, "#ec6428");
+    x.fillStyle = g; x.globalAlpha = 0.25 + 0.75 * fadeA;
+    x.fillRect(px, mid - amp * a, bar, amp * a);
+    x.globalAlpha = (0.25 + 0.75 * fadeA) * 0.28;
+    x.fillRect(px, mid + 2, bar, amp * a * 0.42);
+  }
+  if (b > 0.01) {
+    x.fillStyle = "#e7e7d8"; x.globalAlpha = (0.2 + 0.8 * fadeB) * 0.9;
+    x.fillRect(px, mid - amp * b * 0.82, bar, amp * b * 0.82);
+    x.globalAlpha = (0.2 + 0.8 * fadeB) * 0.22;
+    x.fillRect(px, mid + 2, bar, amp * b * 0.36);
+  }
+}
+x.globalAlpha = 1;
+
+// Crossfade curves across the strip.
+const curve = (fn, color) => {
+  x.beginPath();
+  for (let px = 0; px <= W; px += 4) {
+    const y = 40 + (H - 64) * (1 - fn(px / W));
+    px ? x.lineTo(px, y) : x.moveTo(px, y);
+  }
+  x.strokeStyle = color; x.lineWidth = 1.25; x.stroke();
+};
+curve((t) => 1 - smooth(Math.min(1, Math.max(0, (t - 0.32) / 0.42))), "rgba(240,146,53,.55)");
+curve((t) => smooth(Math.min(1, Math.max(0, (t - 0.26) / 0.42))), "rgba(231,231,216,.4)");
+
+// Playhead at the mix point, glowing.
+const ph = Math.round(W * 0.5);
+x.shadowColor = "rgba(240,146,53,.9)"; x.shadowBlur = 14;
+x.fillStyle = "#f09235"; x.fillRect(ph, 30, 2, H - 30);
+x.shadowBlur = 0;
+x.beginPath(); x.moveTo(ph - 6, 30); x.lineTo(ph + 8, 30); x.lineTo(ph + 1, 38); x.closePath(); x.fill();
+</script>
+</body>
+</html>

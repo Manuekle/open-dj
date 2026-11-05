@@ -1,0 +1,1 @@
+Shift: a DJ workstation that runs on your own machine. Two waveforms crossfade from deck A into deck B.

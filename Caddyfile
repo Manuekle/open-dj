@@ -1,0 +1,21 @@
+# Used by compose.prod.yaml. The app has no accounts, so everything sits behind basic auth.
+{$SITE_DOMAIN} {
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+
+	# Tracks are uploaded to /api/stems, /api/lyrics and /api/backup.
+	request_body {
+		max_size 500MB
+	}
+
+	reverse_proxy app:3000 {
+		# Stem separation and Whisper take minutes: no buffering, long timeouts.
+		flush_interval -1
+		transport http {
+			response_header_timeout 30m
+			read_timeout 30m
+			write_timeout 30m
+		}
+	}
+}

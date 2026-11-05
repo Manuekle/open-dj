@@ -317,6 +317,8 @@ CI (`.github/workflows/ci.yml`) runs typecheck, lint and build on Node 22 for ev
 
 The landing page at https://manuekle.github.io/shift/ is a single HTML file, `docs/index.html`, served by GitHub Pages from `main` / `/docs`. It reuses the app's Sodium dark theme and palette with no build step.
 
+The social card (`docs/og.jpg`, also `src/app/opengraph-image.jpg` and `twitter-image.jpg` for the app) is drawn from `scripts/og/og.html`. After changing it, run `scripts/og/render.sh` (needs Chrome) to render all three. The landing page also ships `sitemap.xml`, `site.webmanifest` and JSON-LD for search engines.
+
 The interface uses the [Sodium](https://design.how/systems/sodium) design system (dark theme), installed from the design.how registry into `src/components/sodium`. Follow `.claude/skills/sodium/SKILL.md` for UI changes and run its lint (`npx eslint -c sodium.eslint.config.mjs .`). Icons come from Hugeicons, swapped in through Sodium's single icon file (`src/components/sodium/icon.tsx`). Sodium has no rotary control or platter, so the knobs and jog wheels are flat line drawings on Sodium's line and data tokens, animated with GSAP.
 
 The logo (`src/app/icon.svg`) is four mirrored ellipses in an orange gradient on a dark tile. The same glyph is drawn in the header by `src/components/app-mark.tsx`.
