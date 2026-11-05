@@ -16,7 +16,7 @@ import { Switch } from "@/components/sodium/ui/switch";
 import { Slider } from "@/components/sodium/ui/slider";
 import { Status } from "@/components/sodium/ui/status";
 import { ArrowLeft, Download, Icon, Play, Previous, Record, StopOutline } from "@/components/sodium/icon";
-import { Ruler, gridOf, token, useCanvas, type Grid } from "@/components/stems/stems-view";
+import { Ruler, gridOf, token, useCanvas, type Grid } from "@/components/stems/timeline";
 
 /* A four-track studio. Each lane holds one clip: a stem of a library track, or your voice recorded over whatever the
    other lanes play. Every lane starts at its own offset on one shared timeline, so a take lines up with the backing

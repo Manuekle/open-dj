@@ -28,18 +28,34 @@ export type TransitionPreset = "auto" | "fade" | "rise" | "blend" | "space" | "e
 /** What a transition does with stems (Demucs). "vocals" takes the outgoing vocals out early and brings the incoming ones
     in late; "bass" swaps the bass stems at eqAt; "drums" brings the incoming drums in first and the rest of it later;
     "acapella" leaves the outgoing vocals over the incoming instrumental; "full" does the vocal handover, the bass swap
-    and the drum swap together. */
-export type TransitionStems = "none" | "vocals" | "bass" | "drums" | "acapella" | "full";
+    and the drum swap together. "custom" moves each stem on its own, as TransitionPlan.stemMoves says. */
+export type TransitionStems = "none" | "vocals" | "bass" | "drums" | "acapella" | "full" | "custom";
+/** How one stem crosses a transition. "blend" leaves it to the volume curves; "swap" trades the old stem for the new
+    one at the swap point; "early" plays the new stem from the start and takes the old one out mid-way; "late" holds the
+    old stem and brings the new one in through the second half; "custom" follows the points the DJ drew for that stem
+    (TransitionPlan.stemCurves). */
+export type StemMove = "blend" | "swap" | "early" | "late" | "custom";
+export type StemMoves = Partial<Record<StemName, StemMove>>;
 /** The shape of a transition, without where it sits: what a DJ saves as an AutoMix template. */
-export type TransitionShape = Pick<TransitionPlan, "volume" | "eq" | "effect"> & Partial<Pick<TransitionPlan, "curve" | "eqAt" | "intensity" | "echoBeats" | "stems">>;
+export type TransitionShape = Pick<TransitionPlan, "volume" | "eq" | "effect"> & Partial<Pick<TransitionPlan, "curve" | "eqAt" | "intensity" | "echoBeats" | "stems" | "stemMoves" | "stemCurves" | "pitch" | "speed">>;
 /** One transition between two tracks: where the outgoing one starts leaving, where the incoming one enters, how long
     it takes in bars of the outgoing track, and how volume, low end and effects move across it. */
 export type TransitionPlan = {
   fromId: string; toId: string; outAt: number; inAt: number; bars: number;
   volume: VolumeCurve; eq: TransitionEq; effect: TransitionEffect; preset: TransitionPreset;
   stems?: TransitionStems;
+  /** Each stem's own move, read when stems is "custom"; a stem left out blends. */
+  stemMoves?: StemMoves;
+  /** The DJ's own points for a stem whose move is "custom", taken out of (out) and brought into (in) each track on top
+      of the volume curve. The old stem starts full and the new one ends full; the other ends hold their nearest point. */
+  stemCurves?: Partial<Record<StemName, CustomCurve>>;
   /** The DJ's own volume envelopes, read when volume is "custom". */
   curve?: CustomCurve;
+  /** Pitch and tempo moves per track, drawn by hand. A point's g is 0..1 with 0.5 as no change: pitch spans ±PITCH_RANGE
+      semitones and speed ±SPEED_RANGE of the deck's tempo, each independent of the other (lib/transition motionOf). The
+      old track starts unchanged and holds its last point; the new one holds its first point and ends unchanged. */
+  pitch?: CustomCurve;
+  speed?: CustomCurve;
   /** Where the bass swaps (eq "bass", stems "bass" and "full") and a cut lands, 0..1 of the transition. Default 0.5. */
   eqAt?: number;
   /** How hard the effect works: 1 is its designed depth, 0 leaves it out, up to 1.5 pushes it. Default 1. */

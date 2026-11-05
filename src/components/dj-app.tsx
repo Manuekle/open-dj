@@ -13,6 +13,7 @@ import { Console } from "@/components/console";
 import { Studio } from "@/components/studio";
 import { TransitionPanel } from "@/components/transition-editor";
 import { mixMarks } from "@/components/automix/model";
+import { LyricsFollow } from "@/components/lyrics/lyrics-follow";
 import { AutoMixPanel } from "@/components/automix/automix-panel";
 import { useAutoMixPanelProps } from "@/components/automix/use-panel-props";
 import { TrackEditor } from "@/components/track-editor";
@@ -54,6 +55,9 @@ export function DJApp() {
     return projects.tracks.filter(t => `${t.title} ${t.artist} ${t.fileName}`.toLowerCase().includes(q));
   }, [projects.tracks, search]);
   const live = dj.decks.A.playing || dj.decks.B.playing;
+  // The lyrics follow the deck that is heard: the one playing, else the one the crossfader favours, else the one with a track.
+  const followDeck = dj.decks.A.playing !== dj.decks.B.playing ? (dj.decks.A.playing ? "A" : "B")
+    : dj.decks.A.playing ? (dj.cross <= 0 ? "A" : "B") : dj.trackA || !dj.trackB ? "A" : "B";
   // What the waveforms mark: the running mix, else the transition AutoMix will run next, else the plan between the decks.
   const shown = dj.transition?.plan ?? (dj.auto.enabled ? dj.auto.plan : null) ?? dj.plan;
   const byId = useMemo(() => new Map(dj.tracks.map(t => [t.id, t])), [dj.tracks]);
@@ -156,6 +160,8 @@ export function DJApp() {
           library={projects.tracks} onLoadTrack={trackId => { const t = byId.get(trackId); if (t) dj.loadToDeck(id, t); }}
           silent={dj.silent[id]} onHear={() => dj.makeHeard(id)} positions={dj.positions}/>)}
       </div>
+
+      <LyricsFollow dj={dj} deck={followDeck} track={followDeck === "A" ? dj.trackA : dj.trackB}/>
 
       <AutoMixPanel {...automix.props}/>
 

@@ -1,4 +1,4 @@
-import type { TransitionEffect, TransitionEq, TransitionStems, VolumeCurve } from "@/lib/types";
+import type { StemMove, TransitionEffect, TransitionEq, TransitionStems, VolumeCurve } from "@/lib/types";
 
 /* The names and one-line descriptions of every transition shape, shared by the transition editor, the AutoMix settings
    and the AI planner's prompt, so each place offers the same moves under the same words. */
@@ -39,6 +39,12 @@ export const STEM_OPTIONS: { value: TransitionStems; label: string; hint?: strin
   { value: "acapella", label: "Acapella over", hint: "The old track drops to its vocals and sings over the new instrumental; the new vocals wait for the end." },
   { value: "full", label: "Full stem blend", hint: "Drums first, the bass stems swap and the vocals hand over, all in one blend." },
 ];
+/** The moves one stem can make, for the per-stem rows. */
+export const STEM_MOVE_OPTIONS: { value: StemMove; label: string }[] = [
+  { value: "blend", label: "Blend" }, { value: "swap", label: "Swap" }, { value: "early", label: "Early" }, { value: "late", label: "Late" },
+  { value: "custom", label: "Custom" },
+];
+export const STEM_MOVE_HINT = "Per stem: Blend follows the volume, Swap trades at the swap point, Early brings the new one in first, Late keeps the old one longer. Custom: draw the stem's own curve on the waveforms (or pick the stem above them).";
 export const ECHO_BEATS = [0.25, 0.5, 0.75, 1, 2];
 export const beatsLabel = (n: number) => n === 0.25 ? "1/4" : n === 0.5 ? "1/2" : n === 0.75 ? "3/4" : String(n);
 export const labelOf = <T extends string>(options: { value: T; label: string }[], value: T | undefined) => options.find(o => o.value === value)?.label ?? value ?? "";

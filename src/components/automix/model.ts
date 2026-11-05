@@ -83,7 +83,7 @@ const EFFECT_LABEL: Record<TransitionPlan["effect"], string | null> = {
   reverb: "reverb wash", flanger: "flanger", swap: "filter swap",
 };
 const STEM_LABEL: Record<NonNullable<TransitionPlan["stems"]>, string | null> = {
-  none: null, vocals: "vocal handover", bass: "bass stem swap", drums: "drums first", acapella: "acapella over", full: "stem blend",
+  none: null, vocals: "vocal handover", bass: "bass stem swap", drums: "drums first", acapella: "acapella over", full: "stem blend", custom: "per-stem moves",
 };
 
 /** A deck as the panel needs it: which track and at what rate. Position is read from the media clock, never from here. */

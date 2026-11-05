@@ -13,7 +13,7 @@ import { readQueue } from "@/lib/queue";
 import { gridFromTempo } from "@/lib/manual-tempo";
 import { gridBpm } from "@/lib/grid";
 import { ANALYSIS_VERSION, analyzeFile, analyzeRhythmAndStructure, analyzeStems, fingerprintOf, staleness, clearSamples, dropSamples, inferName, probeDuration, type Analysis } from "@/lib/analyze";
-import { autoTrim, foldMultiple, movesStems, planRatio, presetOf, shapeOfPlan, spanOn, swapsBassStem, syncRate } from "@/lib/transition";
+import { autoTrim, foldMultiple, hasMotion, movesStems, planRatio, presetOf, shapeOfPlan, spanOn, speedOf, swapsBassStem, syncRate } from "@/lib/transition";
 import { mixFeatures } from "@/lib/mix-features";
 import { DEFAULT_SMART_STYLE, planTransition, scorePlan, styleKey, styleOptions, withStyle, type Evaluation, type PlannerResult, type SmartStyle } from "@/lib/transition-planner";
 import { clearTracks, loadMixes, loadTracks, removeMix, removeTrack, saveMix, saveTrack } from "@/lib/storage";
@@ -819,6 +819,8 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
       // still playing (the DJ had started it), on a short glide so the hand-back is not a step.
       if (running.startedTo) { clearRateRamp(running.to); applyRate(running.to, naturalRates.current[running.to]); }
       else recoverRate(running.to);
+      // A drawn speed move changed the outgoing deck's rate under the deck state; its own rate comes back.
+      engine.current?.setRate(running.from, decksRef.current[running.from].rate);
       // Only stop the incoming deck if the mix was the one that started it: one the DJ had already started keeps going.
       if (running.startedTo) engine.current?.pause(running.to);
       stopAligning();
@@ -1157,16 +1159,20 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
     // full mix, where the vocals lane has nothing to move.
     const handover = movesStems(run.stems) && current.stemMode(from) && current.stemMode(to);
     // A stem move that cannot run (a deck plays the full mix) still keeps two bass lines apart: on the eq instead.
-    if (!handover && swapsBassStem(run.stems) && run.eq === "none") run = { ...run, eq: "bass" };
+    if (!handover && swapsBassStem(run.stems, run.stemMoves) && run.eq === "none") run = { ...run, eq: "bass" };
     const session = current.scheduleMix({ from, to, plan: run, start, duration: span / rateOut, outStart, handover,
       beat: fromBpm ? 60 / fromBpm / rateOut : undefined });
 
+    // A drawn speed move drives both decks' rates from here, so the match that keeps the beats locked is off for it: the
+    // lanes follow the audio clock and the media is left to run at the rate the curve asks.
+    const speedy = hasMotion(run.speed);
     let shown = -1, lastRateOut = rateOut, lastBase = base.rate, offClock = 0, fellBack = false, finishing = false;
     const complete = () => {
       if (clock.current !== null) window.clearInterval(clock.current);
       clock.current = null;
       // The outgoing deck is silent by now (its lane is at 0 and the crossfader has left it); only the decoder stops.
       current.pause(from);
+      if (speedy) current.setRate(from, decksRef.current[from].rate);
       current.endMix();
       crossfade(dir);
       activeMix.current = null;
@@ -1215,7 +1221,11 @@ export function useDJ(inputRef: React.RefObject<HTMLInputElement | null>) {
       // A short incoming track can run out before the blend does: finish the fade quickly rather than hold a silent deck.
       if (toMedia.ended && !finishing) leave(FINISH_SECONDS);
       const progress = session.progressAt(at);
-      if (!finishing) {
+      if (!finishing && speedy) {
+        const sp = speedOf(run, progress);
+        current.setRate(from, rateOut * sp.out);
+        current.setRate(to, base.rate * sp.in);
+      } else if (!finishing) {
         const rateNow = fromMedia.playbackRate || rateOut;
         const media = (fromMedia.currentTime - outAt) / span;
         let rebased = false;

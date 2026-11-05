@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, tmpdir } from "node:os";
 import path from "node:path";
-import { parseWhisper, type Lyrics } from "@/lib/lyrics";
+import { dtwPreset, parseSpeech, parseWhisper, type Lyrics, type Speech } from "@/lib/lyrics";
 
 /* Lyrics with a time on every word, for karaoke, from whisper.cpp (https://github.com/ggml-org/whisper.cpp) run on the
    machine serving the app. POST the audio as the body: it queues a job and answers its id. GET ?job=<id> reads its
@@ -16,7 +16,13 @@ import { parseWhisper, type Lyrics } from "@/lib/lyrics";
 export const dynamic = "force-dynamic";
 
 const WHISPER = process.env.WHISPER_BIN ?? "whisper-cli";
-const MODEL = process.env.WHISPER_MODEL ?? path.join(process.cwd(), ".whisper", "ggml-small.bin");
+const MODELS_DIR = path.join(process.cwd(), ".whisper");
+/** Models setup:whisper can fetch, the most accurate first: the best one installed is used, unless WHISPER_MODEL names one. */
+const MODEL_NAMES = ["large-v3", "large-v3-turbo", "medium", "small", "base"];
+/** Silero voice activity detection, run on the vocals stem alongside Whisper: where the singing is, so a word Whisper left
+    in an instrumental break goes back to where the voice comes in. Not on a full mix, where the music hides the voice. */
+const VAD_MODEL = process.env.WHISPER_VAD_MODEL ?? path.join(MODELS_DIR, "ggml-silero-v5.1.2.bin");
+const VAD = process.env.WHISPER_VAD_BIN ?? (WHISPER.includes("/") ? path.join(path.dirname(WHISPER), "whisper-vad-speech-segments") : "whisper-vad-speech-segments");
 const FFMPEG = process.env.FFMPEG_BIN ?? "ffmpeg";
 const MAX_BYTES = 150 * 1024 * 1024;
 /** A job nobody asked about for this long is dropped with its files. */
@@ -36,7 +42,14 @@ async function binary() {
   for (const dir of (process.env.PATH ?? "").split(path.delimiter)) if (dir && await exists(path.join(dir, WHISPER))) return true;
   return false;
 }
-const installed = async () => (await binary()) && await exists(MODEL);
+async function model() {
+  if (process.env.WHISPER_MODEL) return await exists(process.env.WHISPER_MODEL) ? process.env.WHISPER_MODEL : undefined;
+  for (const name of MODEL_NAMES) {
+    const file = path.join(MODELS_DIR, `ggml-${name}.bin`);
+    if (await exists(file)) return file;
+  }
+}
+const installed = async () => (await binary()) && Boolean(await model());
 
 function run(cmd: string, args: string[], onOutput?: (text: string) => void) {
   return new Promise<void>((resolve, reject) => {
@@ -50,6 +63,17 @@ function run(cmd: string, args: string[], onOutput?: (text: string) => void) {
   });
 }
 
+/** Where the voice is in a vocals stem, by Silero VAD. A low threshold (0.3, not 0.5): sung and processed vocals sound less
+    like speech than speech does. Nothing when the detector is not installed or fails: it only refines the times. */
+async function singing(wav: string, threads: number): Promise<Speech[]> {
+  if (!await exists(VAD_MODEL)) return [];
+  let output = "";
+  try {
+    await run(VAD, ["-f", wav, "-vm", VAD_MODEL, "-vt", "0.3", "-vsd", "300", "-vp", "200", "-t", String(threads)], text => { output += text; });
+  } catch { return []; }
+  return parseSpeech(output);
+}
+
 async function transcribe(job: Job, input: string, source: "mix" | "vocals", language: string) {
   job.state = "running";
   // Whisper reads 16 kHz mono. The stems file holds the vocals as its first stereo pair (channels 0 and 1).
@@ -58,14 +82,22 @@ async function transcribe(job: Job, input: string, source: "mix" | "vocals", lan
   await run(FFMPEG, ["-y", "-loglevel", "error", "-i", input, "-vn", ...filter, "-ar", "16000", "-c:a", "pcm_s16le", wav]);
   job.progress = 0.02;
   // One word per entry (-ml 1 with -sow) gives a start and an end for each. No context carried between windows (-mc 0)
-  // stops the repetition loops Whisper falls into on sung audio; -sns drops the music and applause tags.
+  // stops the repetition loops Whisper falls into on sung audio; -sns drops the music and applause tags. -dtw aligns
+  // every token to the audio by the model's attention, far tighter than Whisper's timestamp guesses, which drift over
+  // every instrumental break; it needs flash attention off (-nfa).
+  const file = await model();
+  if (!file) throw new Error("No Whisper model is installed. Run npm run setup:whisper.");
   const out = path.join(job.dir, "out");
   const threads = Math.max(2, Math.min(8, availableParallelism() - 1));
-  await run(WHISPER, ["-m", MODEL, "-f", wav, "-l", language, "-ml", "1", "-sow", "-mc", "0", "-sns", "-pp", "-ojf", "-of", out, "-t", String(threads)], text => {
+  const args = ["-m", file, "-f", wav, "-l", language, "-ml", "1", "-sow", "-mc", "0", "-sns", "-pp", "-ojf", "-of", out, "-t", String(threads)];
+  const dtw = process.env.WHISPER_DTW || dtwPreset(file);
+  if (dtw) args.push("-dtw", dtw, "-nfa");
+  const speech = source === "vocals" ? await singing(wav, threads) : [];
+  await run(WHISPER, args, text => {
     const all = [...text.matchAll(/progress\s*=\s*(\d+)%/g)];
-    if (all.length) job.progress = Math.max(job.progress, 0.02 + Number(all[all.length - 1][1]) / 100 * 0.97);
+    if (all.length) job.progress = Math.max(job.progress, 0.03 + Number(all[all.length - 1][1]) / 100 * 0.96);
   });
-  const { language: heard, words } = parseWhisper(JSON.parse(await readFile(`${out}.json`, "utf8")));
+  const { language: heard, words } = parseWhisper(JSON.parse(await readFile(`${out}.json`, "utf8")), speech);
   job.lyrics = { version: 1, language: heard || (language === "auto" ? "" : language), source, words };
   job.progress = 1;
   job.state = "done";

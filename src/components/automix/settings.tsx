@@ -75,7 +75,7 @@ export const AutoMixSettings = memo(function AutoMixSettings({ style, onStyle, s
     {style?.template && <Row label="Template" id={`${id}-template`} caption="Saved from the transition editor. The overrides below still win where set.">
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate type-body-sm">{[labelOf(VOLUME_OPTIONS, style.template.volume), labelOf(EQ_OPTIONS, style.template.eq), labelOf(EFFECT_OPTIONS, style.template.effect),
-          style.template.stems && style.template.stems !== "none" ? labelOf(STEM_OPTIONS, style.template.stems) : null].filter(Boolean).join(" · ")}</span>
+          style.template.stems && style.template.stems !== "none" ? (style.template.stems === "custom" ? "Per-stem moves" : labelOf(STEM_OPTIONS, style.template.stems)) : null].filter(Boolean).join(" · ")}</span>
         <Button size="sm" variant="ghost" onClick={() => set({ template: null })}>Clear</Button>
       </div>
     </Row>}

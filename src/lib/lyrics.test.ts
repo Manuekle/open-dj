@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupLines, indexAt, lineAt, lrcTime, parseWhisper, shifted, toLrc, wordFill, type LyricWord } from "@/lib/lyrics";
+import { dtwPreset, groupLines, indexAt, lineAt, lrcTime, parseSpeech, parseWhisper, shifted, toLrc, wordFill, type LyricWord } from "@/lib/lyrics";
 
 const entry = (from: number, to: number, text: string) => ({ offsets: { from, to }, text });
 const word = (t: number, e: number, w: string): LyricWord => ({ t, e, w });
@@ -30,6 +30,63 @@ describe("parseWhisper", () => {
   it("answers no words for a body that is not a transcription", () => {
     expect(parseWhisper(null).words).toEqual([]);
     expect(parseWhisper({}).language).toBe("");
+  });
+
+  // With -dtw, every token carries its start in centiseconds; special tokens ([_BEG_], [_TT_42]) have -1.
+  const timed = (from: number, to: number, text: string, dtw: number) => ({ offsets: { from, to }, text, tokens: [{ text: "[_BEG_]", t_dtw: -1 }, { text, t_dtw: dtw }] });
+
+  it("starts a word where DTW aligned it, not where Whisper's timestamps drifted", () => {
+    // Whisper's guess stretches "look" over the 10 s intro; DTW puts it where it is sung.
+    const { words } = parseWhisper({ transcription: [timed(0, 2400, " look", 990), timed(2400, 3600, " at", 1020)] });
+    expect(words.map(w => w.t)).toEqual([9.9, 10.2]);
+    expect(words[0].e).toBe(10.2);
+  });
+
+  it("ends a word where the next starts, but not across a pause", () => {
+    const { words } = parseWhisper({ transcription: [timed(1000, 1400, " one", 100), timed(1400, 1800, " two", 140), timed(1800, 2200, " three", 900)] });
+    expect(words[0].e).toBe(1.4);
+    expect(words[1].e).toBeCloseTo(1.8);
+  });
+
+  it("moves a start left in a silence to where the singing comes back", () => {
+    const speech: [number, number][] = [[1, 2], [5, 7]];
+    const { words } = parseWhisper({ transcription: [timed(1000, 3000, " oh", 100), timed(3000, 5300, " so", 300), timed(5300, 5600, " you", 540)] }, speech);
+    expect(words[1].t).toBe(5);
+    // A word sung at the end of a stretch stops with it.
+    expect(words[0].e).toBe(2);
+  });
+
+  it("leaves a start in a silence alone when the singing comes back after the next word", () => {
+    const { words } = parseWhisper({ transcription: [timed(0, 500, " a", 300), timed(500, 900, " b", 400)] }, [[5, 6]]);
+    // "a" stays, or it would land after "b"; "b", the last word, moves.
+    expect(words.map(w => w.t)).toEqual([3, 5]);
+  });
+
+  it("drops the phrases Whisper makes up for silence, when they stand alone", () => {
+    const { words } = parseWhisper({ transcription: [entry(1000, 1500, " hold"), entry(1500, 2000, " on"), entry(30000, 30500, " Thank"), entry(30500, 31000, " you.")] });
+    expect(words.map(w => w.w)).toEqual(["hold", "on"]);
+  });
+
+  it("keeps such a phrase when it is sung inside a line", () => {
+    const { words } = parseWhisper({ transcription: [entry(1000, 1500, " I"), entry(1500, 2000, " said"), entry(2000, 2500, " thank"), entry(2500, 3000, " you")] });
+    expect(words.map(w => w.w)).toEqual(["I", "said", "thank", "you"]);
+  });
+});
+
+describe("parseSpeech", () => {
+  it("reads whisper-vad-speech-segments' centiseconds as seconds, in order", () => {
+    const output = "Detected 2 speech segments:\nSpeech segment 1: start = 1350.00, end = 1486.00\nSpeech segment 0: start = 972.00, end = 1220.00\n";
+    expect(parseSpeech(output)).toEqual([[9.72, 12.2], [13.5, 14.86]]);
+    expect(parseSpeech("no speech")).toEqual([]);
+  });
+});
+
+describe("dtwPreset", () => {
+  it("names the alignment heads of a model file", () => {
+    expect(dtwPreset("/x/.whisper/ggml-large-v3.bin")).toBe("large.v3");
+    expect(dtwPreset("ggml-large-v3-turbo-q5_0.bin")).toBe("large.v3.turbo");
+    expect(dtwPreset("ggml-small.en.bin")).toBe("small.en");
+    expect(dtwPreset("my-finetune.bin")).toBeUndefined();
   });
 });
 

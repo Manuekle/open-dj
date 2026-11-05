@@ -1,4 +1,4 @@
-import type { CurvePoint, CustomCurve, Track, TransitionEffect, TransitionEq, TransitionPlan, TransitionPreset, TransitionShape, TransitionStems, VolumeCurve } from "@/lib/types";
+import { STEMS, type CurvePoint, type CustomCurve, type StemMove, type StemMoves, type Track, TransitionEffect, TransitionEq, type TransitionPlan, type TransitionPreset, type TransitionShape, type TransitionStems, type VolumeCurve } from "@/lib/types";
 import { barIndexAt, barStarts, beatTimes, gridBpm } from "@/lib/grid";
 import { entryPoint, exitPoint } from "@/lib/mix-points";
 
@@ -155,13 +155,56 @@ export function vocalsAt(stems: TransitionStems | undefined, t: number) {
 }
 /** Whether a stem move hands the vocals over, swaps the bass stems, or needs stems at all. */
 export const handsVocals = (stems?: TransitionStems) => stems === "vocals" || stems === "full";
-export const swapsBassStem = (stems?: TransitionStems) => stems === "bass" || stems === "full";
+export const swapsBassStem = (stems?: TransitionStems, moves?: StemMoves) => stems === "custom" ? moves?.bass === "swap" : stems === "bass" || stems === "full";
 export const movesStems = (stems?: TransitionStems) => !!stems && stems !== "none";
+/** A stem's drawn points as a full line: the old stem starts full and the new one ends full (they meet the tracks as
+    they play on either side of the mix); the other end of each holds its nearest point, or stays full with none. */
+export function stemSidePoints(side: "out" | "in", points: CurvePoint[] = []): CurvePoint[] {
+  const inner = points.filter(p => p.t > 0 && p.t < 1).map(p => ({ t: p.t, g: clamp01(p.g) })).sort((a, b) => a.t - b.t);
+  return side === "out" ? [{ t: 0, g: 1 }, ...inner, { t: 1, g: inner.at(-1)?.g ?? 1 }] : [{ t: 0, g: inner[0]?.g ?? 1 }, ...inner, { t: 1, g: 1 }];
+}
+/** Points that draw a per-stem move, so a stem's drawn curve can start from the move it had. */
+export function seedStemCurve(move: StemMove, at = 0.5): CustomCurve {
+  if (move === "swap") return { out: [{ t: at - 0.04, g: 1 }, { t: at + 0.04, g: 0 }], in: [{ t: at - 0.04, g: 0 }, { t: at + 0.04, g: 1 }] };
+  if (move === "early") return { out: [{ t: 0.45, g: 1 }, { t: 0.55, g: 0 }], in: [] };
+  if (move === "late") return { out: [], in: [{ t: 0.5, g: 0 }, { t: 0.85, g: 1 }] };
+  return { out: [], in: [] };
+}
+/** Gain of the old and the new copy of one stem under a per-stem move, at progress t with the swap point at `at`. */
+export function stemMoveAt(move: Exclude<StemMove, "custom">, t: number, at: number) {
+  if (move === "swap") { const k = ramp(t, at - 0.04, at + 0.04); return { out: 1 - k, in: k }; }
+  if (move === "early") return { out: 1 - ramp(t, 0.45, 0.55), in: 1 };
+  if (move === "late") return { out: 1, in: ramp(t, 0.5, 0.85) };
+  return { out: 1, in: 1 };
+}
+const BLEND_ALL = { vocals: "blend", drums: "blend", bass: "blend", other: "blend" } as const satisfies Required<StemMoves>;
+/** The per-stem moves each named stem move comes closest to, so the per-stem picker can show a named move and start
+    from it. bass and drums match exactly; the vocal handover and the acapella are near (their own timing differs). */
+export const STEM_MOVES_OF: Record<Exclude<TransitionStems, "custom">, Required<StemMoves>> = {
+  none: BLEND_ALL,
+  vocals: { ...BLEND_ALL, vocals: "swap" },
+  bass: { ...BLEND_ALL, bass: "swap" },
+  drums: { vocals: "late", drums: "early", bass: "late", other: "late" },
+  acapella: { vocals: "late", drums: "early", bass: "early", other: "early" },
+  full: { vocals: "swap", drums: "early", bass: "swap", other: "late" },
+};
+/** Each stem's move in a plan, named moves read through STEM_MOVES_OF. */
+export const stemMovesOf = (plan: Pick<TransitionPlan, "stems" | "stemMoves">): Required<StemMoves> =>
+  plan.stems === "custom" ? { ...BLEND_ALL, ...plan.stemMoves } : STEM_MOVES_OF[plan.stems ?? "none"];
 /** Gain of each stem of the outgoing and incoming track, in STEMS order (vocals, drums, bass, melody), for a plan. The
     volume curve still runs on top: these only take stems out of what each side plays. */
-export function stemsOf(plan: Pick<TransitionPlan, "stems" | "eqAt">, t: number) {
+export function stemsOf(plan: Pick<TransitionPlan, "stems" | "eqAt" | "stemMoves" | "stemCurves">, t: number) {
   const out = [1, 1, 1, 1], inn = [1, 1, 1, 1], at = swapPoint(plan), move = plan.stems ?? "none";
   if (move === "none") return { out, in: inn };
+  if (move === "custom") {
+    STEMS.forEach(({ id }, i) => {
+      const move = plan.stemMoves?.[id] ?? "blend", drawn = plan.stemCurves?.[id];
+      const g = move !== "custom" ? stemMoveAt(move, t, at)
+        : drawn ? { out: curveGain(stemSidePoints("out", drawn.out), t), in: curveGain(stemSidePoints("in", drawn.in), t) } : { out: 1, in: 1 };
+      out[i] = g.out; inn[i] = g.in;
+    });
+    return { out, in: inn };
+  }
   if (handsVocals(move)) { const v = vocalsAt(move, t); out[0] = v.out; inn[0] = v.in; }
   if (swapsBassStem(move)) { const k = ramp(t, at - 0.04, at + 0.04); out[2] = 1 - k; inn[2] = k; }
   if (move === "drums" || move === "full") {
@@ -181,6 +224,43 @@ export function stemsOf(plan: Pick<TransitionPlan, "stems" | "eqAt">, t: number)
   return { out, in: inn };
 }
 
+/** How far a drawn pitch line reaches either side of no change, in semitones, and a speed line in share of the deck's tempo. */
+export const PITCH_RANGE = 12;
+export const SPEED_RANGE = 0.25;
+export type Motion = "pitch" | "speed";
+const NEUTRAL = 0.5;
+/** A pitch or speed side's points as a full line: the old track starts unchanged and holds its last point (or stays
+    unchanged); the new one holds its first point and ends unchanged. */
+export function motionSidePoints(side: "out" | "in", points: CurvePoint[] = []): CurvePoint[] {
+  const inner = points.filter(p => p.t > 0 && p.t < 1).map(p => ({ t: p.t, g: clamp01(p.g) })).sort((a, b) => a.t - b.t);
+  return side === "out"
+    ? [{ t: 0, g: NEUTRAL }, ...inner, { t: 1, g: inner.at(-1)?.g ?? NEUTRAL }]
+    : [{ t: 0, g: inner[0]?.g ?? NEUTRAL }, ...inner, { t: 1, g: NEUTRAL }];
+}
+/** Whether a pitch or speed curve moves anything. */
+export const hasMotion = (curve?: CustomCurve) => !!curve && [...curve.out, ...curve.in].some(p => Math.abs(p.g - NEUTRAL) > 0.005);
+/** What a drawn point's g means: semitones for pitch, a share of the tempo for speed. */
+export const motionValue = (kind: Motion, g: number) => (clamp01(g) - NEUTRAL) * 2 * (kind === "pitch" ? PITCH_RANGE : SPEED_RANGE);
+/** The point height a value sits at, the inverse of motionValue. */
+export const motionGain = (kind: Motion, value: number) => clamp01(NEUTRAL + value / (2 * (kind === "pitch" ? PITCH_RANGE : SPEED_RANGE)));
+/** Pitch shift in semitones of the outgoing and incoming track at progress t, independent of tempo. */
+export function pitchOf(plan: Pick<TransitionPlan, "pitch">, t: number) {
+  const c = plan.pitch;
+  if (!c) return { out: 0, in: 0 };
+  return { out: motionValue("pitch", curveGain(motionSidePoints("out", c.out), t)), in: motionValue("pitch", curveGain(motionSidePoints("in", c.in), t)) };
+}
+/** Tempo multiplier (1 = the deck's own) of the outgoing and incoming track at progress t, independent of pitch. */
+export function speedOf(plan: Pick<TransitionPlan, "speed">, t: number) {
+  const c = plan.speed;
+  if (!c) return { out: 1, in: 1 };
+  return { out: 1 + motionValue("speed", curveGain(motionSidePoints("out", c.out), t)), in: 1 + motionValue("speed", curveGain(motionSidePoints("in", c.in), t)) };
+}
+/** Frequency ratio of a shift in semitones. */
+export const semitoneRatio = (semitones: number) => 2 ** (semitones / 12);
+/** Human text for a motion value: "+3.0 st", "-12%". */
+export const motionText = (kind: Motion, value: number) =>
+  kind === "pitch" ? `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(1)} st` : `${value >= 0 ? "+" : "−"}${Math.abs(value * 100).toFixed(0)}%`;
+
 type PresetSpec = { label: string; hint: string; volume: VolumeCurve; eq: TransitionEq; effect: TransitionEffect; stems?: TransitionStems };
 export const PRESETS: Record<Exclude<TransitionPreset, "custom">, PresetSpec> = {
   auto: { label: "Auto", hint: "Crossfade, bass swap and a low pass on the old track.", volume: "smooth", eq: "bass", effect: "lowpass" },
@@ -194,8 +274,8 @@ export const PRESETS: Record<Exclude<TransitionPreset, "custom">, PresetSpec> = 
   stem: { label: "Stems", hint: "A full stem blend: drums first, the bass swaps, the vocals hand over.", volume: "smooth", eq: "none", effect: "none", stems: "full" },
 };
 /** The preset a plan's shape matches, or "custom". */
-export function presetOf(plan: Pick<TransitionPlan, "volume" | "eq" | "effect" | "stems">): TransitionPreset {
-  if (plan.volume === "custom") return "custom";
+export function presetOf(plan: Pick<TransitionPlan, "volume" | "eq" | "effect" | "stems"> & Partial<Pick<TransitionPlan, "pitch" | "speed">>): TransitionPreset {
+  if (plan.volume === "custom" || hasMotion(plan.pitch) || hasMotion(plan.speed)) return "custom";
   const hit = (Object.keys(PRESETS) as (keyof typeof PRESETS)[]).find(k => {
     const p = PRESETS[k];
     return p.volume === plan.volume && p.eq === plan.eq && p.effect === plan.effect && (p.stems ?? null) === (movesStems(plan.stems) ? plan.stems : null);
@@ -204,9 +284,11 @@ export function presetOf(plan: Pick<TransitionPlan, "volume" | "eq" | "effect" |
 }
 /** A transition's shape, as saved for an AutoMix template. */
 export function shapeOfPlan(plan: TransitionPlan): TransitionShape {
-  const { volume, curve, eq, eqAt, effect, intensity, echoBeats, stems } = plan;
+  const { volume, curve, eq, eqAt, effect, intensity, echoBeats, stems, stemMoves, pitch, speed } = plan;
   return { volume, eq, effect, ...(volume === "custom" && curve ? { curve } : {}), ...(eqAt !== undefined ? { eqAt } : {}),
-    ...(intensity !== undefined ? { intensity } : {}), ...(echoBeats !== undefined ? { echoBeats } : {}), ...(stems ? { stems } : {}) };
+    ...(intensity !== undefined ? { intensity } : {}), ...(echoBeats !== undefined ? { echoBeats } : {}), ...(stems ? { stems } : {}),
+    ...(stems === "custom" && stemMoves ? { stemMoves } : {}), ...(stems === "custom" && plan.stemCurves ? { stemCurves: plan.stemCurves } : {}),
+    ...(hasMotion(pitch) ? { pitch } : {}), ...(hasMotion(speed) ? { speed } : {}) };
 }
 
 /** Seconds per beat. Without an estimated tempo a nominal 120 bpm only sizes a transition in seconds; nothing snaps to it. */

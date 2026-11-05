@@ -195,8 +195,8 @@ export function withStyle(result: PlannerResult, from: Track, to: Track, style: 
   const next: TransitionPlan = { ...base };
   const t = style.template;
   if (t) {
-    Object.assign(next, { volume: t.volume, eq: t.eq, effect: t.effect, curve: t.curve, eqAt: t.eqAt, intensity: t.intensity, echoBeats: t.echoBeats });
-    if (t.stems !== undefined) next.stems = t.stems;
+    Object.assign(next, { volume: t.volume, eq: t.eq, effect: t.effect, curve: t.curve, eqAt: t.eqAt, intensity: t.intensity, echoBeats: t.echoBeats, pitch: t.pitch, speed: t.speed });
+    if (t.stems !== undefined) { next.stems = t.stems; next.stemMoves = t.stemMoves; next.stemCurves = t.stemCurves; }
     said.push("Your saved transition template sets the curves, eq, effect and stems.");
   }
   if (style.volume && style.volume !== "auto") { next.volume = style.volume; next.curve = undefined; }
@@ -206,7 +206,7 @@ export function withStyle(result: PlannerResult, from: Track, to: Track, style: 
   if (style.intensity !== undefined && style.intensity !== 1) next.intensity = style.intensity;
   const stemmed = !!from.stems && !!to.stems;
   if (movesStems(next.stems) && !stemmed) {
-    if (swapsBassStem(next.stems) && next.eq === "none") next.eq = "bass";
+    if (swapsBassStem(next.stems, next.stemMoves) && next.eq === "none") next.eq = "bass";
     said.push("Stem moves need both tracks split into stems; until then the bass swaps on the eq.");
     next.stems = "none";
   }

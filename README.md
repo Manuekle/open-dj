@@ -136,7 +136,12 @@ The chosen plan is an ordinary transition plan, so the editor, its draggable poi
 
 Press **Split** in the library's Stems column, or **Split stems** in a deck's Stems pad mode. `src/app/api/stems/route.ts` runs Demucs (`htdemucs`) on the machine serving the app, about half the track's length on an Apple M2 CPU, and merges the four stems (vocals, drums, bass, melody) into one 8-channel FLAC that the browser keeps with the track.
 
-A deck plays that file through one gain per stem (`src/lib/audio-engine.ts`), so the stems stay sample-locked through tempo, seeks and loops. The Stems pads mute each stem, or jump to **Vox** (vocals only), **Inst** (no vocals), **Beat** (drums and bass) or **All**. The [Stems page](#pages) shows every stem on its own lane, like a DAW playlist, with mute, solo and level per lane.
+A deck plays that file through one gain per stem (`src/lib/audio-engine.ts`), so the stems stay sample-locked through tempo, seeks and loops. The Stems pads mute each stem, or jump to **Vox** (vocals only), **Inst** (no vocals), **Beat** (drums and bass) or **All**. The [Stems page](#pages) shows every stem on its own lane, like a DAW playlist, in two modes (`src/components/stems`, model in `src/lib/stem-mix.ts`):
+
+- **Edit**: one track. Each stem has mute, solo, level, a low/high-pass filter and pan. **Loop** a stretch (drag the ruler, or 1 to 16 bars from the playhead) and **mute** a stem for a stretch (the Mute tool: drag on its lane, click a mute to remove it), snapped to beats or bars, with a hard cut or a fade at the edges. Zoom with Ctrl and the wheel or + and −.
+- **Mix**: two tracks on one timeline. B is synced to A's tempo and placed 16 bars before A ends; drag its clip or step it by bars. Both tracks have the same lanes, channels and mutes, so any stem of one plays against any stem of the other, and **Swap at playhead** moves bass, drums, vocals, melody or everything from A to B like a transition's stem swap. Above the stems, A and B sit on two volume lanes like the transition editor, with B's own time under them: the fade over the stretch both cover is **Smooth**, **Linear** or **Cut**, and the **Volume** tool draws it by hand (click to add a point, drag it, double-click to remove it). **Preview blend** loops the blend with 4 bars before it and plays it. **Auto blend** lays the whole blend out from the decks' own planner (where B enters, its tempo, the fade, a curve for every stem the plan moves), and **AI blend** asks the local model through Ollama, the same way the transition editor's AI plan does (`src/lib/stem-plan.ts`); the plan's notes show under the buttons. A plan's effect (echo, filter sweep) plays on the decks only. The **Volume** tool also draws a curve on any single stem.
+
+**Import link** on that page downloads a track like the decks page does and, by default, splits it into stems as soon as it arrives. The page keeps your edits in this browser.
 
 ### Studio
 
@@ -153,7 +158,7 @@ The [Studio page](#pages) is a four-track workspace for recording your voice ove
 
 The [Karaoke page](#pages) plays the track with its words lighting up as they are sung: the line now sung is large, the words already sung are dark and the current word is marked. Click a line to jump to it. With stems, **Vocals** turns the singer off and leaves the instrumental. **Earlier** and **Later** move every time by 0.1 s when Whisper ran a little off, and **Download LRC** saves the lyrics as an enhanced LRC file (a tag per line and per word) that karaoke and music players read.
 
-Language is detected by default; pick one in the Karaoke page before transcribing when detection guesses wrong on a short or noisy track. Whisper does not know the real lyrics, it writes what it hears, so check sung or mumbled passages. Run `npm run setup:whisper` once (it needs [Homebrew](https://brew.sh) on a Mac, or `whisper-cli` on your `PATH`, and ffmpeg). The model is `small` (488 MB) by default; `WHISPER_MODEL_NAME=large-v3-turbo npm run setup:whisper` fetches a better one.
+Language is detected by default; pick one in the Karaoke page before transcribing when detection guesses wrong on a short or noisy track. Whisper does not know the real lyrics, it writes what it hears, so check sung or mumbled passages. Run `npm run setup:whisper` once (it needs [Homebrew](https://brew.sh) on a Mac, or `whisper-cli` on your `PATH`, and ffmpeg). The model is `large-v3` (3.1 GB), Whisper's most accurate; `WHISPER_MODEL_NAME=large-v3-turbo npm run setup:whisper` fetches one half the size and faster, nearly as good. The route uses the most accurate model in `.whisper/`. Every word is placed by DTW alignment rather than Whisper's own timestamps, which drift over instrumental breaks, and on a vocals stem Silero voice activity detection moves a word left in a break to where the singing comes back. The phrases Whisper makes up over silence ("Thank you.", "Subtítulos por la comunidad de Amara.org") are dropped when they stand alone.
 
 ### Sampler and drum machine
 
@@ -190,7 +195,7 @@ The Docker image includes ffmpeg but **not yt-dlp**, so this feature needs yt-dl
 | Route | What it is |
 |---|---|
 | `/` | The DJ workstation: library, two decks, mixer, transition editor, AutoMix, set timeline, sampler and drum machine. |
-| `/stems` | Every stem of a track on its own lane, with mute, solo and level. |
+| `/stems` | Every stem of a track on its own lane: mute, solo, level, filter and pan per stem, loops, timed mutes, a two-track stem mix and link import. |
 | `/lyrics` | Karaoke: the lyrics of a track with the timing of every word, an instrumental mode when the track has stems, LRC export. |
 | `/studio` | Four-track studio: record your voice over stems of your library, autotune it, export the mix. |
 | `/play` | The rhythm game. |
@@ -217,7 +222,10 @@ Without Docker, the routes also read these (all optional):
 | `DEMUCS_DEVICE` | unset (Demucs picks) | `cpu`, `mps` or `cuda`. |
 | `FFMPEG_BIN` | `ffmpeg` | Stems, lyrics and link import. |
 | `WHISPER_BIN` | `whisper-cli` | Lyrics. |
-| `WHISPER_MODEL` | `.whisper/ggml-small.bin` | Lyrics: path of the Whisper model. |
+| `WHISPER_MODEL` | the most accurate in `.whisper/` | Lyrics: path of the Whisper model. |
+| `WHISPER_DTW` | from the model's file name | Lyrics: whisper.cpp's `-dtw` preset, for a model whose name does not tell it (`large.v3`, `small`…). |
+| `WHISPER_VAD_BIN` | `whisper-vad-speech-segments` next to `WHISPER_BIN` | Lyrics: voice activity detection on the vocals stem. |
+| `WHISPER_VAD_MODEL` | `.whisper/ggml-silero-v5.1.2.bin` | Lyrics: the Silero model. |
 | `YTDLP_BIN` | `yt-dlp` | Link import. |
 
 ### Faster AI on a Mac

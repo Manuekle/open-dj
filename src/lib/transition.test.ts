@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { camelotOf } from "@/lib/analyze";
 import { track } from "@/lib/test-tracks";
 import {
-  autoPlan, foldMultiple, harmony, mainEntry, outroStart, snapToBar, spanOn, syncRate, tempoGap, tempoRatio, volumeAt,
+  autoPlan, foldMultiple, hasMotion, harmony, motionGain, motionValue, pitchOf, presetOf, shapeOfPlan, speedOf, mainEntry, outroStart, seedStemCurve, snapToBar, spanOn, stemMovesOf, stemsOf, swapsBassStem, syncRate, tempoGap, tempoRatio, volumeAt,
   type Harmony,
 } from "@/lib/transition";
-import type { VolumeCurve } from "@/lib/types";
+import type { TransitionPlan, VolumeCurve } from "@/lib/types";
 
 describe("tempo matching", () => {
   it("stretches a near tempo by the ratio", () => {
@@ -173,5 +173,98 @@ describe("autoPlan", () => {
   it("decides the same way every time", () => {
     const a = shaped({ ...key("8A") }), b = shaped({ bpm: 126, ...key("9A") });
     expect(autoPlan(a, b)).toEqual(autoPlan(a, b));
+  });
+});
+
+describe("per-stem moves", () => {
+  const base = { eqAt: 0.5 };
+  it("moves each stem on its own", () => {
+    const plan = { ...base, stems: "custom" as const, stemMoves: { vocals: "late" as const, drums: "early" as const, bass: "swap" as const } };
+    const start = stemsOf(plan, 0), end = stemsOf(plan, 1);
+    // Early: the new drums play from the start, the old ones are gone by the end.
+    expect(start.in[1]).toBe(1); expect(end.out[1]).toBe(0);
+    // Late: the old vocals hold, the new ones arrive by the end.
+    expect(start.in[0]).toBe(0); expect(end.out[0]).toBe(1); expect(end.in[0]).toBe(1);
+    // Swap: the bass trades at the swap point, never both at once.
+    expect(stemsOf(plan, 0.4).out[2]).toBe(1); expect(stemsOf(plan, 0.6).in[2]).toBe(1);
+    // A stem left out blends.
+    expect(stemsOf(plan, 0.5).out[3]).toBe(1); expect(stemsOf(plan, 0.5).in[3]).toBe(1);
+  });
+
+  it.each(["bass", "drums"] as const)("the rows for %s play the same gains as the named move", move => {
+    const named = { ...base, stems: move }, rows = { ...base, stems: "custom" as const, stemMoves: stemMovesOf(named) };
+    for (let i = 0; i <= 100; i++) expect(stemsOf(rows, i / 100)).toEqual(stemsOf(named, i / 100));
+  });
+
+  it("swaps the bass on the eq when a per-stem bass swap has no stems to run on", () => {
+    expect(swapsBassStem("custom", { bass: "swap" })).toBe(true);
+    expect(swapsBassStem("custom", { vocals: "swap" })).toBe(false);
+  });
+});
+
+describe("drawn stem curves", () => {
+  it("follow the points, with the old stem starting full and the new one ending full", () => {
+    const plan = { eqAt: 0.5, stems: "custom" as const, stemMoves: { vocals: "custom" as const },
+      stemCurves: { vocals: { out: [{ t: 0.3, g: 0.2 }], in: [{ t: 0.7, g: 0 }] } } };
+    expect(stemsOf(plan, 0).out[0]).toBe(1);
+    expect(stemsOf(plan, 0.3).out[0]).toBeCloseTo(0.2, 6);
+    // Past its last point the old stem holds it; before its first point the new stem holds that one.
+    expect(stemsOf(plan, 0.9).out[0]).toBeCloseTo(0.2, 6);
+    expect(stemsOf(plan, 0.1).in[0]).toBeCloseTo(0, 6);
+    expect(stemsOf(plan, 1).in[0]).toBe(1);
+    // The other stems blend.
+    expect(stemsOf(plan, 0.5).out[1]).toBe(1);
+  });
+
+  it.each(["swap", "early", "late"] as const)("a %s seed draws close to the move", move => {
+    const named = { eqAt: 0.5, stems: "custom" as const, stemMoves: { drums: move } };
+    const drawn = { eqAt: 0.5, stems: "custom" as const, stemMoves: { drums: "custom" as const }, stemCurves: { drums: seedStemCurve(move, 0.5) } };
+    for (const t of [0, 0.2, 0.4, 0.6, 0.9, 1]) {
+      // The drawn line eases between points where the move ramps straight: near, not equal.
+      expect(Math.abs(stemsOf(drawn, t).out[1] - stemsOf(named, t).out[1])).toBeLessThan(0.15);
+      expect(Math.abs(stemsOf(drawn, t).in[1] - stemsOf(named, t).in[1])).toBeLessThan(0.15);
+    }
+  });
+});
+
+describe("pitch and speed moves", () => {
+  const base: TransitionPlan = { fromId: "a", toId: "b", outAt: 0, inAt: 0, bars: 8, volume: "smooth", eq: "none", effect: "none", preset: "blend" };
+  const rise = { out: [{ t: 0.5, g: motionGain("pitch", 6) }], in: [{ t: 0.5, g: motionGain("pitch", -6) }] };
+
+  it("leaves both tracks alone without a curve", () => {
+    expect(pitchOf(base, 0.5)).toEqual({ out: 0, in: 0 });
+    expect(speedOf(base, 0.5)).toEqual({ out: 1, in: 1 });
+    expect(hasMotion(undefined)).toBe(false);
+    expect(hasMotion({ out: [{ t: 0.5, g: 0.5 }], in: [] })).toBe(false);
+  });
+
+  it("maps a point's height to semitones and tempo, centred on no change", () => {
+    expect(motionValue("pitch", 0.5)).toBe(0);
+    expect(motionValue("pitch", 1)).toBe(12);
+    expect(motionValue("speed", 0)).toBeCloseTo(-0.25, 9);
+    expect(motionGain("pitch", motionValue("pitch", 0.8))).toBeCloseTo(0.8, 9);
+  });
+
+  it("starts the old track and ends the new one unchanged, holding the other end", () => {
+    const plan = { ...base, pitch: rise };
+    expect(pitchOf(plan, 0).out).toBe(0);
+    expect(pitchOf(plan, 0.5).out).toBeCloseTo(6, 6);
+    expect(pitchOf(plan, 1).out).toBeCloseTo(6, 6);
+    expect(pitchOf(plan, 0).in).toBeCloseTo(-6, 6);
+    expect(pitchOf(plan, 1).in).toBe(0);
+  });
+
+  it("moves speed on its own, as a multiplier of the deck's tempo", () => {
+    const plan = { ...base, speed: { out: [{ t: 0.5, g: motionGain("speed", -0.2) }], in: [] } };
+    expect(speedOf(plan, 0.5).out).toBeCloseTo(0.8, 6);
+    expect(speedOf(plan, 0.5).in).toBe(1);
+    expect(pitchOf(plan, 0.5)).toEqual({ out: 0, in: 0 });
+  });
+
+  it("makes a plan custom and keeps the moves in a saved shape", () => {
+    expect(presetOf({ ...base })).toBe("blend");
+    expect(presetOf({ ...base, pitch: rise })).toBe("custom");
+    expect(shapeOfPlan({ ...base, pitch: rise }).pitch).toEqual(rise);
+    expect(shapeOfPlan({ ...base, pitch: { out: [{ t: 0.5, g: 0.5 }], in: [] } }).pitch).toBeUndefined();
   });
 });

@@ -38,7 +38,21 @@ export type MixLanes = {
   vocals: GainNode;
   /** The transition's own effects, built on first use. */
   rack: Partial<Record<SendKind, AudioEffect>>;
+  /** Pitch shift for a transition: the untouched signal (rests at 1) and the shifted copy (rests at 0), and the shifter
+      itself, built on first use. */
+  pitchDry: GainNode;
+  pitchWet: GainNode;
+  pitch?: PitchShifter;
 };
+
+/** A pitch shifter that leaves tempo alone: two delay lines whose delay time ramps like a sawtooth, a half window apart
+    and faded by a raised-cosine window, so a ramp that runs out hands over to the other. The delay's slope is the shift:
+    a tap that gets `slope` seconds longer per second of window plays at 1 - slope / PITCH_WINDOW of its speed. */
+export type PitchShifter = { delays: DelayNode[]; slopes: GainNode[] };
+export const PITCH_WINDOW = 0.08;
+/** Delay a tap holds at no shift, and the most it can reach (a shift of a ratio r moves a tap by |1 - r| windows). */
+export const PITCH_BASE = 0.003;
+export const PITCH_MAX_RATIO = 2.5;
 
 export type DeckGraph = {
   /** Where a plain stereo source connects. */
@@ -67,6 +81,11 @@ export type DeckGraph = {
 const BASE_HZ = 1000;
 /** Cutoff in cents from 1 kHz, the unit the filters' `detune` lanes move in. */
 export const centsOf = (hz: number) => 1200 * Math.log2(hz / BASE_HZ);
+/** Where a low pass parks when it should leave the signal alone: just under Nyquist, never on it. A low pass at Nyquist
+    has its poles on the unit circle (z = -1, twice), so nothing damps it: any state it holds rings at the top of the band
+    for good and grows until the deck is silent or deafening, and only a reload clears it. Just under, the poles are
+    inside the circle and whatever it holds dies out in a few milliseconds. */
+export const lpRestHz = (ctx: BaseAudioContext) => ctx.sampleRate / 2 * 0.99;
 export const COLOR_LP_REST_HZ = 20000;
 export const COLOR_HP_REST_HZ = 12;
 
@@ -125,7 +144,8 @@ export function buildEffect(ctx: BaseAudioContext, kind: EffectKind): AudioEffec
 }
 
 function filterAt(ctx: BaseAudioContext, type: BiquadFilterType, hz: number, q: number) {
-  const f = ctx.createBiquadFilter(); f.type = type; f.frequency.value = BASE_HZ; f.detune.value = centsOf(hz); f.Q.value = q;
+  const f = ctx.createBiquadFilter(); f.type = type; f.frequency.value = BASE_HZ;
+  f.detune.value = centsOf(type === "lowpass" ? Math.min(hz, lpRestHz(ctx)) : hz); f.Q.value = q;
   return f;
 }
 
@@ -145,17 +165,18 @@ export function createDeckGraph(ctx: BaseAudioContext, destination: AudioNode): 
   const channel = ctx.createGain(); channel.gain.value = 0.82;
   const cross = ctx.createGain();
 
-  const nyquist = ctx.sampleRate / 2;
+  const lpRest = lpRestHz(ctx);
   const stemLanes = [0, 1, 2, 3].map(() => ctx.createGain());
   const mix: MixLanes = {
     low: (() => { const f = ctx.createBiquadFilter(); f.type = "lowshelf"; f.frequency.value = 280; return f; })(),
-    // Butterworth, and at rest parked at Nyquist where a low pass is flat to the top of the band.
-    lp: filterAt(ctx, "lowpass", nyquist, Math.SQRT1_2),
+    // Butterworth, and at rest parked just under Nyquist (see lpRestHz), nearly flat to the top of the band.
+    lp: filterAt(ctx, "lowpass", lpRest, Math.SQRT1_2),
     hp: filterAt(ctx, "highpass", COLOR_HP_REST_HZ, Math.SQRT1_2),
     dry: ctx.createGain(), send: ctx.createGain(), sum: ctx.createGain(), volume: ctx.createGain(),
     stems: stemLanes, vocals: stemLanes[0],
-    rack: {},
+    rack: {}, pitchDry: ctx.createGain(), pitchWet: ctx.createGain(),
   };
+  mix.pitchWet.gain.value = 0;
   mix.send.gain.value = 0;
 
   const splitter = ctx.createChannelSplitter(8);
@@ -170,7 +191,8 @@ export function createDeckGraph(ctx: BaseAudioContext, destination: AudioNode): 
   filter.connect(dry); dry.connect(analyser); wet.connect(analyser);
   analyser.connect(mix.low); mix.low.connect(mix.lp); mix.lp.connect(mix.hp);
   mix.hp.connect(mix.dry); mix.dry.connect(mix.sum); mix.hp.connect(mix.send);
-  mix.sum.connect(mix.volume); mix.volume.connect(channel); channel.connect(cross); cross.connect(destination);
+  mix.sum.connect(mix.pitchDry); mix.pitchDry.connect(mix.volume); mix.pitchWet.connect(mix.volume);
+  mix.volume.connect(channel); channel.connect(cross); cross.connect(destination);
 
   const effects = Object.fromEntries((["echo", "reverb", "flanger", "phaser", "crush"] as const).map(k => [k, buildEffect(ctx, k)])) as Record<EffectKind, AudioEffect>;
   return { input: trim, splitter, stems, trim, low, mid, high, colorLP, colorHP, filter, dry, wet, analyser, channel, cross, mix, effects, activeEffect: "off", stemMode: false };
@@ -184,6 +206,44 @@ export function ensureRack(ctx: BaseAudioContext, deck: DeckGraph, kind: SendKin
   deck.mix.send.connect(effect.input); effect.output.connect(deck.mix.sum);
   deck.mix.rack[kind] = effect;
   return effect;
+}
+
+/** Delay and slope a tap needs for a pitch ratio `r` (1 = unchanged): the delay climbs by `slope` over each window, and
+    starts high enough that a falling one never goes below zero. */
+export function pitchTap(r: number) {
+  const k = Math.max(1 / PITCH_MAX_RATIO, Math.min(PITCH_MAX_RATIO, Number.isFinite(r) ? r : 1));
+  const slope = (1 - k) * PITCH_WINDOW;
+  return { slope, delay: PITCH_BASE + Math.max(0, -slope) };
+}
+/** Share of the shifted copy in the output for a ratio: none at rest, all of it from a fifth of a semitone on, so a
+    shift too small to hear does not put the delayed copy over the dry signal. */
+export function pitchWetShare(r: number) {
+  const semitones = Math.abs(12 * Math.log2(Math.max(1e-3, r)));
+  return Math.min(1, semitones / 0.2);
+}
+
+/** The deck's pitch shifter, wired between the sum and the deck's volume lane. Built once per deck. */
+export function ensurePitch(ctx: BaseAudioContext, deck: DeckGraph): PitchShifter {
+  if (deck.mix.pitch) return deck.mix.pitch;
+  const n = Math.max(2, Math.round(PITCH_WINDOW * ctx.sampleRate));
+  const saw = ctx.createBuffer(1, n, ctx.sampleRate), window = ctx.createBuffer(1, n, ctx.sampleRate);
+  const a = saw.getChannelData(0), w = window.getChannelData(0);
+  for (let i = 0; i < n; i++) { a[i] = i / n; w[i] = Math.sin(Math.PI * i / n) ** 2; }
+  const delays: DelayNode[] = [], slopes: GainNode[] = [];
+  for (const phase of [0, 0.5]) {
+    const delay = ctx.createDelay(PITCH_WINDOW * PITCH_MAX_RATIO + 0.05); delay.delayTime.value = PITCH_BASE;
+    const slope = ctx.createGain(); slope.gain.value = 0;
+    const ramp = ctx.createBufferSource(); ramp.buffer = saw; ramp.loop = true;
+    const fade = ctx.createBufferSource(); fade.buffer = window; fade.loop = true;
+    const tap = ctx.createGain(); tap.gain.value = 0;
+    ramp.connect(slope); slope.connect(delay.delayTime);
+    fade.connect(tap.gain);
+    deck.mix.sum.connect(delay); delay.connect(tap); tap.connect(deck.mix.pitchWet);
+    ramp.start(0, phase * PITCH_WINDOW); fade.start(0, phase * PITCH_WINDOW);
+    delays.push(delay); slopes.push(slope);
+  }
+  deck.mix.pitch = { delays, slopes };
+  return deck.mix.pitch;
 }
 
 /** Times a deck's effects to its tempo: the echo repeats every `beats` beats, and the flanger and phaser sweep once
@@ -200,7 +260,7 @@ export function applyEffectTime(ctx: BaseAudioContext, d: DeckGraph, beat: numbe
     is even in pitch, and neither ever changes type, so a fast turn through zero does not jump. */
 export function applyColor(ctx: BaseAudioContext, deck: DeckGraph, value: number) {
   const t = ctx.currentTime, c = colorCutoffs(value);
-  deck.colorLP.detune.setTargetAtTime(centsOf(c.lp), t, 0.02);
+  deck.colorLP.detune.setTargetAtTime(centsOf(Math.min(c.lp, lpRestHz(ctx))), t, 0.02);
   deck.colorHP.detune.setTargetAtTime(centsOf(c.hp), t, 0.02);
 }
 

@@ -3,117 +3,59 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { loadTracks } from "@/lib/storage";
-import { onStemsDone, startStemJob, useStemProgress } from "@/lib/background-jobs";
+import { onDownloaded, onStemsDone, startStemJob, takePendingImports, useStemProgress } from "@/lib/background-jobs";
+import { importToLibrary } from "@/lib/library-import";
 import { stemPeaks, type StemPeaks } from "@/lib/stem-peaks";
-import { applyColor, applyEffect, createDeckGraph, type DeckGraph } from "@/lib/deck-graph";
-import { EFFECTS, STEMS, formatTime, type EffectName, type StoredTrack } from "@/lib/types";
-import { cn } from "@/lib/sodium/utils";
+import { EFFECTS, STEMS, formatTime, type EffectName, type StoredTrack, type Track, type TransitionPlan } from "@/lib/types";
+import { planToMix } from "@/lib/stem-plan";
+import { planTransition } from "@/lib/transition-planner";
+import { mixFeatures } from "@/lib/mix-features";
+import { EFFECT_OPTIONS, STEM_OPTIONS } from "@/lib/transition-options";
+import {
+  EDGE_OPTIONS, FADE_OPTIONS, SNAP_OPTIONS, alignOffset, crossfade, barLoop, barNumber, clampView, floorTo, lengthOf, makeLayerMix, makeTrackEdit, overlap,
+  swapStem, syncRatio, zoomView, type Cut, type FadeShape, type Loop, type Placement, type Strip, type TrackEdit, type View, type VolumePoint,
+} from "@/lib/stem-mix";
+import { Timeline, gridOf, type TimelineLayer, type Tool } from "@/components/stems/timeline";
+import { useStemEngine, type EngineLayer } from "@/components/stems/use-stem-engine";
+import { LinkImport } from "@/components/stems/link-import";
+import { Pick } from "@/components/pick";
+import { toast } from "@/components/sodium/ui/toast";
 import { Button } from "@/components/sodium/ui/button";
 import { Slider } from "@/components/sodium/ui/slider";
 import { SegmentedControl, SegmentedControlItem } from "@/components/sodium/ui/segmented-control";
 import { Switch } from "@/components/sodium/ui/switch";
 import { Status } from "@/components/sodium/ui/status";
-import { ArrowLeft, Icon, Pause, Play, Previous } from "@/components/sodium/icon";
+import { Add, ArrowLeft, Download, Icon, Lightning, Pause, Play, Previous, Repeat, Shrink, Sparkles, Subtract } from "@/components/sodium/icon";
 
-/* The stems of a track laid out like a DAW playlist: one lane per Demucs stem with its waveform under a bar ruler, and
-   at the left of each lane its name, mute, solo and level. The track plays through the same eight-channel split the
-   decks use (lib/deck-graph), so muting a stem here is the same as muting it on a deck. Click or drag on the lanes to move. */
 
-/** Chart series tokens per stem, in STEMS order. */
-const LANE_COLORS = ["--data-1", "--data-6", "--data-2", "--data-5"];
-const BAR_STEPS = [1, 2, 4, 8, 16, 32, 64];
+/* The Stems page. Edit: one track, its four stems on their own lanes with a channel each (mute, solo, level, filter, pan),
+   cuts that silence one stem for a stretch, and a loop. Mix: two tracks on one timeline, the second one synced to the
+   first one's tempo and dragged to where it should come in, with the same lanes and cuts for both, so any stem of one
+   plays against any stem of the other; the stem swaps of a transition are one click at the playhead. The edits are kept
+   in this browser. */
 
-export type Grid = { beat: number; first: number } | null;
-export const gridOf = (t: StoredTrack): Grid => t.bpm && t.bpm > 0 ? { beat: 60 / t.bpm, first: t.firstBeat ?? 0 } : null;
-export const token = (name: string) => getComputedStyle(document.body).getPropertyValue(name).trim();
+type Mode = "edit" | "mix";
+type PlanInfo = { by: "auto" | "ai"; model?: string; notes: string[]; score?: number; title: string };
+type Saved = {
+  mode: Mode; selected: string | null; a: string | null; b: string | null; offset: number; sync: boolean;
+  edits: Record<string, TrackEdit>; mixEdits: [TrackEdit, TrackEdit]; snap: string; edge: string; autoSplit: boolean;
+  /** How A fades out and B in; anything but custom is worked out from where B sits. */
+  fade: FadeShape;
+  /** The plan the mix was last laid out from, for its notes. */
+  plan: PlanInfo | null;
+};
+const KEY = "shift.stems.v1";
+const LOOP_BARS = [1, 2, 4, 8, 16];
+const SWAPS = [{ label: "Bass", stems: [2] }, { label: "Drums", stems: [1] }, { label: "Vocals", stems: [0] }, { label: "Melody", stems: [3] }, { label: "All", stems: [0, 1, 2, 3] }];
+const barSpan = (a: number, b: number) => a === b ? `Bar ${a}` : `Bars ${a}–${b}`;
+const first = (v: number | readonly number[]) => Array.isArray(v) ? v[0] : v as number;
 
-/** Canvas sized to its box at the display's pixel ratio, redrawn through `draw` when the size or `deps` change. */
-export function useCanvas(draw: (ctx: CanvasRenderingContext2D, w: number, h: number) => void, deps: unknown[]) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  const [size, setSize] = useState({ w: 0, h: 0 });
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || !size.w || !size.h) return;
-    const dpr = window.devicePixelRatio || 1;
-    el.width = Math.round(size.w * dpr); el.height = Math.round(size.h * dpr);
-    const ctx = el.getContext("2d");
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, size.w, size.h);
-    draw(ctx, size.w, size.h);
-    // draw is rebuilt every render; deps names what it actually reads.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [size, ...deps]);
-  return ref;
-}
-
-export function Ruler({ duration, grid }: { duration: number; grid: Grid }) {
-  const ref = useCanvas((ctx, w, h) => {
-    if (!duration) return;
-    const line = token("--line"), text = token("--text-3"), mono = token("--font-mono");
-    ctx.font = `11px ${mono}`; ctx.textBaseline = "top"; ctx.fillStyle = text; ctx.strokeStyle = line; ctx.lineWidth = 1;
-    const px = w / duration;
-    const tick = (x: number, tall: boolean) => { ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, h - (tall ? 12 : 5)); ctx.lineTo(Math.round(x) + 0.5, h); ctx.stroke(); };
-    if (grid) {
-      const barPx = grid.beat * 4 * px;
-      const every = BAR_STEPS.find(s => s * barPx >= 44) ?? BAR_STEPS[BAR_STEPS.length - 1];
-      for (let n = 0; ; n++) {
-        const t = grid.first + n * grid.beat;
-        if (t > duration) break;
-        if (t < 0) continue;
-        const bar = n % 4 === 0, x = t * px;
-        if (bar) {
-          const index = n / 4;
-          tick(x, true);
-          if (index % every === 0) ctx.fillText(String(index + 1), x + 4, 3);
-        } else if (grid.beat * px >= 8) tick(x, false);
-      }
-    } else {
-      const every = [1, 2, 5, 10, 15, 30, 60, 120].find(s => s * px >= 56) ?? 120;
-      for (let t = 0; t <= duration; t += every) { tick(t * px, true); ctx.fillText(formatTime(t), t * px + 4, 3); }
-    }
-  }, [duration, grid]);
-  return <canvas ref={ref} className="block h-7 w-full" aria-hidden="true"/>;
-}
-
-function Lane({ peaks, color, dim, duration, grid }: { peaks: StemPeaks | undefined; color: string; dim: boolean; duration: number; grid: Grid }) {
-  const ref = useCanvas((ctx, w, h) => {
-    const line = token("--line-faint"), strong = token("--line");
-    const px = duration ? w / duration : 0;
-    // Beat lines behind the wave, a stronger one at each bar.
-    if (grid && px) {
-      for (let n = 0; ; n++) {
-        const t = grid.first + n * grid.beat;
-        if (t > duration) break;
-        if (t < 0) continue;
-        const bar = n % 4 === 0;
-        if (!bar && grid.beat * px < 8) continue;
-        ctx.strokeStyle = bar ? strong : line; ctx.lineWidth = 1;
-        const x = Math.round(t * px) + 0.5;
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
-      }
-    }
-    if (!peaks) return;
-    const mid = h / 2, amp = mid - 4, n = peaks.max.length;
-    ctx.fillStyle = token(color); ctx.globalAlpha = dim ? 0.25 : 1;
-    // One column per pixel, each the extremes of the buckets it covers.
-    for (let x = 0; x < w; x++) {
-      const from = Math.floor(x / w * n), to = Math.max(from + 1, Math.floor((x + 1) / w * n));
-      let lo = 0, hi = 0;
-      for (let i = from; i < to && i < n; i++) { if (peaks.min[i] < lo) lo = peaks.min[i]; if (peaks.max[i] > hi) hi = peaks.max[i]; }
-      const top = mid - hi * amp, bottom = mid - lo * amp;
-      ctx.fillRect(x, top, 1, Math.max(1, bottom - top));
-    }
-    ctx.globalAlpha = 1;
-  }, [peaks, color, dim, duration, grid]);
-  return <canvas ref={ref} className="block h-24 w-full" aria-hidden="true"/>;
+function initial(): Saved {
+  const base: Saved = { mode: "edit", selected: null, a: null, b: null, offset: 0, sync: true, edits: {}, mixEdits: [makeTrackEdit(), makeTrackEdit()], snap: "1", edge: "0.25", autoSplit: true, fade: "smooth", plan: null };
+  try {
+    const raw = localStorage.getItem(KEY);
+    return raw ? { ...base, ...JSON.parse(raw) as Partial<Saved> } : base;
+  } catch { return base; }
 }
 
 /** Newest first, one entry per file (copies share a fingerprint). Of several copies the one with stems is kept, else the oldest. */
@@ -126,196 +68,348 @@ function withStems(all: StoredTrack[]) {
   return [...best.values()].sort((a, b) => b.addedAt - a.addedAt);
 }
 
+/** Where the second track comes in by default: its first beat on the bar 16 bars before the first track ends. */
+function defaultOffset(a: StoredTrack, b: StoredTrack, ratio: number) {
+  const ga = gridOf(a), gb = gridOf(b);
+  const lead = ga ? 64 * ga.beat : 30;
+  return Math.max(0, alignOffset(Math.max(0, a.duration - lead), ga, gb, ratio, 4));
+}
+
 export function StemsView() {
   const [tracks, setTracks] = useState<StoredTrack[] | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [peaks, setPeaks] = useState<StemPeaks[] | undefined>();
-  const [state, setState] = useState<"idle" | "reading" | "failed">("idle");
-  const [playing, setPlaying] = useState(false);
-  const [duration, setDuration] = useState(0);
-  const [mute, setMute] = useState([false, false, false, false]);
-  const [solo, setSolo] = useState([false, false, false, false]);
-  const [level, setLevel] = useState([1, 1, 1, 1]);
-  const [eq, setEq] = useState([0, 0, 0]);
-  const [color, setColor] = useState(0);
-  const [fx, setFx] = useState<EffectName>("off");
-  const [fxAmount, setFxAmount] = useState(0.5);
+  const [saved, setSaved] = useState<Saved>(initial);
+  const { mode, selected, sync, snap, edge } = saved;
+  const patch = (p: Partial<Saved>) => setSaved(s => ({ ...s, ...p }));
+  const [peaks, setPeaks] = useState<Record<string, StemPeaks[]>>({});
+  const [reading, setReading] = useState<Record<string, "reading" | "failed">>({});
   const [speed, setSpeed] = useState(1);
   const [keepPitch, setKeepPitch] = useState(true);
+  const [tool, setTool] = useState<Tool>("move");
+  const [loop, setLoop] = useState<Loop | null>(null);
+  const [loopOn, setLoopOn] = useState(false);
+  const [view, setView] = useState<View | null>(null);
+  const [focus, setFocus] = useState(0);
+  const [linkOpen, setLinkOpen] = useState(false);
   const splitting = useStemProgress();
-  const [splitError, setSplitError] = useState<string | null>(null);
+  // Whether /api/mix can reach Ollama with its model, asked once per visit.
+  const [aiAvailable, setAiAvailable] = useState(false);
+  useEffect(() => {
+    let live = true;
+    fetch("/api/mix").then(r => r.ok ? r.json() as Promise<{ available: boolean }> : { available: false }, () => ({ available: false }))
+      .then(b => { if (live) setAiAvailable(!!b.available); });
+    return () => { live = false; };
+  }, []);
 
-  const media = useRef<HTMLAudioElement | null>(null);
-  const context = useRef<AudioContext | null>(null);
-  const gains = useRef<GainNode[]>([]);
-  const deck = useRef<DeckGraph | null>(null);
   const playhead = useRef<HTMLDivElement>(null);
   const clock = useRef<HTMLSpanElement>(null);
-  const peakCache = useRef(new Map<string, StemPeaks[]>());
-
-  const all = useMemo(() => tracks ? withStems(tracks) : null, [tracks]);
-  const ready = useMemo(() => all?.filter(t => t.stems) ?? [], [all]);
-  const missing = useMemo(() => all?.filter(t => !t.stems) ?? [], [all]);
-  const track = ready.find(t => t.id === selected) ?? null;
-  const grid = useMemo(() => track ? gridOf(track) : null, [track]);
+  const barText = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
     let live = true;
     loadTracks().then(list => { if (live) setTracks(list); }, () => { if (live) setTracks([]); });
     return () => { live = false; };
   }, []);
+  useEffect(() => { try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch { /* private window or full: edits live for this visit */ } }, [saved]);
 
-  // One element and one eight-channel split for the page's life; the track only changes the element's source.
-  useEffect(() => {
-    const el = new Audio();
-    el.preload = "auto";
-    const ctx = new AudioContext();
-    // The same chain a deck has (stem lanes, three-band EQ, color filter, effects), into a limiter so a bass boost cannot clip.
-    const limiter = ctx.createDynamicsCompressor();
-    limiter.threshold.value = -1; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.001; limiter.release.value = 0.1;
-    limiter.connect(ctx.destination);
-    const graph = createDeckGraph(ctx, limiter);
-    ctx.createMediaElementSource(el).connect(graph.splitter);
-    gains.current = graph.stems; deck.current = graph;
-    media.current = el; context.current = ctx;
-    return () => { el.pause(); el.removeAttribute("src"); el.load(); void ctx.close(); media.current = null; context.current = null; };
-  }, []);
+  const all = useMemo(() => tracks ? withStems(tracks) : null, [tracks]);
+  const ready = useMemo(() => all?.filter(t => t.stems) ?? [], [all]);
+  const missing = useMemo(() => all?.filter(t => !t.stems) ?? [], [all]);
+  const byId = (id: string | null) => ready.find(t => t.id === id) ?? null;
 
-  // Writes only what changed: the playhead moves every frame, the clock text once a second.
-  const drawn = useRef({ left: "", time: "" });
-  const paint = useCallback(() => {
-    const el = media.current;
-    if (!el) return;
-    const total = el.duration || 0;
-    const left = total ? `${Math.min(100, el.currentTime / total * 100)}%` : "0%", time = formatTime(el.currentTime);
-    if (playhead.current && drawn.current.left !== left) { playhead.current.style.left = left; drawn.current.left = left; }
-    if (clock.current && drawn.current.time !== time) { clock.current.textContent = time; drawn.current.time = time; }
-  }, []);
+  // The layers on the timeline: one in edit mode, two (or one while the second is unchosen) in mix mode.
+  const trackA = mode === "edit" ? byId(selected) : byId(saved.a);
+  const trackB = mode === "mix" ? byId(saved.b) : null;
+  const ratioB = trackA && trackB && sync ? syncRatio(trackA.bpm, trackB.bpm) : 1;
+  const storedA = mode === "edit" ? (trackA && saved.edits[trackA.id]) || makeTrackEdit() : saved.mixEdits[0];
+  const storedB = saved.mixEdits[1];
 
-  useEffect(() => {
-    const el = media.current;
-    if (!el) return;
-    const sync = () => { setPlaying(!el.paused); paint(); };
-    const meta = () => { if (Number.isFinite(el.duration)) setDuration(el.duration); paint(); };
-    el.addEventListener("play", sync); el.addEventListener("pause", sync); el.addEventListener("ended", sync);
-    el.addEventListener("seeked", paint); el.addEventListener("loadedmetadata", meta); el.addEventListener("durationchange", meta);
-    return () => {
-      el.removeEventListener("play", sync); el.removeEventListener("pause", sync); el.removeEventListener("ended", sync);
-      el.removeEventListener("seeked", paint); el.removeEventListener("loadedmetadata", meta); el.removeEventListener("durationchange", meta);
-    };
-  }, [paint]);
+  const engineLayers: EngineLayer[] = [];
+  const fadeBeats = Number(edge);
+  // A layer's length is its media's once known: the analysis can be a few ms off the stems file.
+  const [durations, setDurations] = useState<[number, number]>([0, 0]);
+  const placeA: Placement = { offset: 0, ratio: 1, duration: durations[0] || trackA?.duration || 0 };
+  const placeB: Placement = { offset: saved.offset, ratio: ratioB, duration: durations[1] || trackB?.duration || 0 };
+  // In mix mode the volume curves follow B until one is drawn by hand: the fade spans what both tracks cover.
+  const blend = trackA && trackB ? overlap(placeA, placeB) : null;
+  const baseGridEarly = trackA ? gridOf(trackA) : null;
+  const autoCurves = mode === "mix" && trackB && saved.fade !== "custom"
+    ? crossfade(placeA, placeB, saved.fade, blend, blend ? floorTo((blend.from + blend.to) / 2, baseGridEarly, 4) : undefined) : null;
+  const editA: TrackEdit = autoCurves ? { ...storedA, volume: autoCurves[0] } : storedA;
+  const editB: TrackEdit = autoCurves ? { ...storedB, volume: autoCurves[1] } : storedB;
+  engineLayers.push({ track: trackA, placement: placeA, edit: editA, fadeBeats });
+  engineLayers.push({ track: trackB, placement: placeB, edit: editB, fadeBeats });
+  const baseGrid = trackA ? gridOf(trackA) : null;
+  const viewRef = useRef<View>({ from: 0, span: 0 });
+  const baseGridRef = useRef(baseGrid);
+  useEffect(() => { baseGridRef.current = baseGrid; });
 
-  // The playhead follows the element's clock every frame while it plays.
-  useEffect(() => {
-    if (!playing) return;
-    let frame = requestAnimationFrame(function tick() { paint(); frame = requestAnimationFrame(tick); });
-    return () => cancelAnimationFrame(frame);
-  }, [playing, paint]);
-
-  // Load the selected track: its stems file into the element, and its waveforms into the lanes.
-  useEffect(() => {
-    const el = media.current;
-    if (!el) return;
-    el.pause();
-    if (!track?.stems) { el.removeAttribute("src"); el.load(); return; }
-    const url = URL.createObjectURL(track.stems);
-    el.src = url; el.load();
-    const cached = peakCache.current.get(track.id);
-    let live = true;
-    if (cached) { queueMicrotask(() => { if (live) { setPeaks(cached); setState("idle"); } }); }
-    else {
-      queueMicrotask(() => { if (live) { setPeaks(undefined); setState("reading"); } });
-      stemPeaks(track.stems).then(p => {
-        peakCache.current.set(track.id, p);
-        if (live) { setPeaks(p); setState("idle"); }
-      }, () => { if (live) setState("failed"); });
+  // Playhead, clock and bar number move every frame without a render; the view follows the playhead page by page.
+  const drawn = useRef({ left: "", time: "", bar: "" });
+  const followRef = useRef(false);
+  const onFrame = useCallback((t: number) => {
+    const v = viewRef.current;
+    if (followRef.current && v.span && (t > v.from + v.span || t < v.from)) {
+      setView(clampView({ from: t - v.span * 0.05, span: v.span }, Infinity));
     }
-    return () => { live = false; URL.revokeObjectURL(url); };
-  }, [track]);
+    const x = v.span ? (t - v.from) / v.span : 0;
+    const left = x < 0 || x > 1 ? "hidden" : `${x * 100}%`;
+    if (playhead.current && drawn.current.left !== left) {
+      playhead.current.style.display = left === "hidden" ? "none" : "";
+      if (left !== "hidden") playhead.current.style.left = left;
+      drawn.current.left = left;
+    }
+    const time = formatTime(t), bar = barNumber(t, baseGridRef.current);
+    if (clock.current && drawn.current.time !== time) { clock.current.textContent = time; drawn.current.time = time; }
+    const barLabel = bar === null ? "" : `Bar ${bar}`;
+    if (barText.current && drawn.current.bar !== barLabel) { barText.current.textContent = barLabel; drawn.current.bar = barLabel; }
+  }, []);
 
-  // Speed of the whole track. The element resets its rate to the default when the source changes, so both are set.
-  // With keepPitch the pitch holds (time-stretch); without it the pitch moves with the speed, like a record.
+  const engine = useStemEngine({ layers: engineLayers, speed, keepPitch, loop: loopOn ? loop : null, onFrame, onDurations: setDurations });
+  useEffect(() => { followRef.current = engine.playing; }, [engine.playing]);
+  const total = lengthOf(engineLayers.filter(l => l.track).map(l => l.placement));
+  const shown = clampView(view ?? { from: 0, span: total }, total);
+  useEffect(() => { viewRef.current = shown; });
+  const engineRef = useRef(engine);
+  useEffect(() => { engineRef.current = engine; });
+
+  // Re-fit the view and clear the loop when the tracks on the timeline change.
+  /** The view around the blend, 8 bars either side; the whole timeline when there is none. */
+  const blendView = () => {
+    if (!blend) return null;
+    const pad = baseGrid ? baseGrid.beat * 32 : 15;
+    return clampView({ from: blend.from - pad, span: blend.to - blend.from + 2 * pad }, total);
+  };
+  const blendViewRef = useRef(blendView);
+  useEffect(() => { blendViewRef.current = blendView; });
+  const idsKey = `${mode}|${trackA?.id ?? ""}|${trackB?.id ?? ""}`;
+  const lastIds = useRef(idsKey);
   useEffect(() => {
-    const el = media.current;
-    if (!el) return;
-    el.defaultPlaybackRate = speed; el.playbackRate = speed;
-    const m = el as HTMLAudioElement & { webkitPreservesPitch?: boolean };
-    m.preservesPitch = keepPitch;
-    if ("webkitPreservesPitch" in m) m.webkitPreservesPitch = keepPitch;
-  }, [speed, keepPitch, track]);
+    if (lastIds.current === idsKey) return;
+    lastIds.current = idsKey;
+    queueMicrotask(() => { setView(blendViewRef.current()); setLoop(null); setLoopOn(false); setFocus(0); });
+  }, [idsKey]);
+  // Paint the playhead again when the view moves.
+  useEffect(() => { onFrame(engineRef.current.now()); }, [shown.from, shown.span, onFrame]);
 
-  // EQ in dB (-24 cuts the band out), the one-knob color filter and the effect, on the same graph a deck uses.
+  // Waveforms of the tracks on the timeline, read once per track and kept for the visit.
   useEffect(() => {
-    const ctx = context.current, d = deck.current;
-    if (!ctx || !d) return;
-    const t = ctx.currentTime;
-    d.low.gain.setTargetAtTime(eq[0], t, 0.02); d.mid.gain.setTargetAtTime(eq[1], t, 0.02); d.high.gain.setTargetAtTime(eq[2], t, 0.02);
-    applyColor(ctx, d, color);
-    applyEffect(ctx, d, fx, fxAmount);
-  }, [eq, color, fx, fxAmount]);
+    for (const t of [trackA, trackB]) {
+      if (!t?.stems || peaks[t.id] || reading[t.id]) continue;
+      const id = t.id, blob = t.stems;
+      queueMicrotask(() => setReading(r => ({ ...r, [id]: "reading" })));
+      stemPeaks(blob, Math.min(20000, Math.max(2400, Math.round(t.duration * 40)))).then(
+        p => { setPeaks(m => ({ ...m, [id]: p })); setReading(r => { const rest = { ...r }; delete rest[id]; return rest; }); },
+        () => setReading(r => ({ ...r, [id]: "failed" })),
+      );
+    }
+  }, [trackA, trackB, peaks, reading]);
 
-  // A stem sounds when it is not muted and, if any lane is soloed, when it is one of them. Fades a few ms: no click.
-  useEffect(() => {
-    const ctx = context.current;
-    if (!ctx) return;
-    const anySolo = solo.some(Boolean);
-    gains.current.forEach((g, k) => {
-      const audible = anySolo ? solo[k] : !mute[k];
-      g.gain.setTargetAtTime(audible ? level[k] : 0, ctx.currentTime, 0.015);
-    });
-  }, [mute, solo, level]);
+  const updateEdit = (layer: number, fn: (e: TrackEdit) => TrackEdit) => setSaved(s => {
+    if (s.mode === "mix") return { ...s, mixEdits: s.mixEdits.map((e, i) => i === layer ? fn(e) : e) as [TrackEdit, TrackEdit] };
+    if (!s.selected) return s;
+    return { ...s, edits: { ...s.edits, [s.selected]: fn(s.edits[s.selected] ?? makeTrackEdit()) } };
+  });
+  const onStrip = (layer: number, stem: number, p: Partial<Strip>) => updateEdit(layer, e => ({ ...e, strips: e.strips.map((s, k) => k === stem ? { ...s, ...p } : s) }));
+  /** A drawn curve. In mix mode the first edit turns the worked-out fade into points of both curves, then edits them. */
+  const onVolume = (layer: number, points: VolumePoint[], stem: number | null = null) => setSaved(s => {
+    if (stem !== null) {
+      const put = (e: TrackEdit): TrackEdit => {
+        const curves = [0, 1, 2, 3].map(k => e.stemVolume?.[k] ?? []);
+        curves[stem] = points;
+        return { ...e, stemVolume: curves };
+      };
+      if (s.mode === "mix") return { ...s, mixEdits: s.mixEdits.map((e, i) => i === layer ? put(e) : e) as [TrackEdit, TrackEdit] };
+      return s.selected ? { ...s, edits: { ...s.edits, [s.selected]: put(s.edits[s.selected] ?? makeTrackEdit()) } } : s;
+    }
+    if (s.mode !== "mix") {
+      if (!s.selected) return s;
+      return { ...s, edits: { ...s.edits, [s.selected]: { ...(s.edits[s.selected] ?? makeTrackEdit()), volume: points } } };
+    }
+    const base = s.fade !== "custom" && autoCurves ? s.mixEdits.map((e, i) => ({ ...e, volume: autoCurves[i] })) : s.mixEdits;
+    return { ...s, fade: "custom", mixEdits: base.map((e, i) => i === layer ? { ...e, volume: points } : e) as [TrackEdit, TrackEdit] };
+  });
+  const onCuts = (layer: number, fn: (c: Cut[]) => Cut[]) => updateEdit(layer, e => ({ ...e, cuts: fn(e.cuts) }));
+  const setMix = (layer: number, p: Partial<TrackEdit["mix"]>) => updateEdit(layer, e => ({ ...e, mix: { ...e.mix, ...p } }));
 
-  const pickRef = useRef<(id: string) => void>(() => {});
-  const pick = (id: string) => { setSelected(id); setSpeed(1); setEq([0, 0, 0]); setColor(0); setFx("off"); setDuration(0); setPlaying(false); setMute([false, false, false, false]); setSolo([false, false, false, false]); setLevel([1, 1, 1, 1]); };
-  useEffect(() => { pickRef.current = pick; });
-  /** Separates a track with Demucs (/api/stems), keeps the stems file with it and opens it. One job at a time on the server. */
+  const pickEdit = (id: string) => { patch({ selected: id }); setSpeed(1); };
+  /** Puts a track in slot A or B of the mix; a track already in the other slot swaps places. */
+  const pickMix = (slot: "a" | "b", id: string) => setSaved(s => {
+    const other = slot === "a" ? "b" : "a";
+    const next: Saved = { ...s, [slot]: id, [other]: s[other] === id ? s[slot] : s[other] };
+    next.mixEdits = [slot === "a" || s[other] === id ? makeTrackEdit() : s.mixEdits[0], slot === "b" || s[other] === id ? makeTrackEdit() : s.mixEdits[1]];
+    if (s.fade === "custom") next.fade = "smooth";
+    next.plan = null;
+    const a = ready.find(t => t.id === next.a), b = ready.find(t => t.id === next.b);
+    if (a && b) next.offset = defaultOffset(a, b, s.sync ? syncRatio(a.bpm, b.bpm) : 1);
+    return next;
+  });
+
   async function split(t: StoredTrack) {
     if (splitting[t.id] !== undefined) return;
-    setSplitError(null);
-    // The job and its toast live in lib/background-jobs: leaving this page does not stop them.
     await startStemJob({ id: t.id, title: t.title, blob: t.blob, fileName: t.fileName });
   }
-  // A job that finishes while this page is open (started here or elsewhere) lands on its track and opens it.
+  /** A finished split opens its track: the edited one in edit mode, the first empty slot in mix mode. */
+  const openRef = useRef<(id: string) => void>(() => {});
+  useEffect(() => {
+    openRef.current = id => setSaved(s => s.mode === "edit" ? { ...s, selected: id } : !s.a ? { ...s, a: id } : !s.b && s.a !== id ? { ...s, b: id } : s);
+  });
   useEffect(() => onStemsDone(d => {
     setTracks(list => list?.map(x => x.id === d.trackId ? { ...x, stems: d.blob, stemEnergy: d.stemEnergy } : x) ?? list);
-    pickRef.current(d.trackId);
+    openRef.current(d.trackId);
   }), []);
-  const toggle = useCallback(async () => {
-    const el = media.current;
-    if (!el || !el.src) return;
-    if (el.paused) { await context.current?.resume(); await el.play().catch(() => undefined); } else el.pause();
-  }, []);
-  const rewind = () => { const el = media.current; if (el) { el.currentTime = 0; paint(); } };
 
+  // Downloads from a link land here while this page is open: into the library, then split when asked.
+  const autoSplit = useRef(saved.autoSplit);
+  useEffect(() => { autoSplit.current = saved.autoSplit; });
+  useEffect(() => {
+    let n = 0;
+    const take = async (files: File[]) => {
+      for (const file of files) {
+        const id = `stems-add-${++n}`;
+        toast.loading(`Adding ${file.name}`, { id, description: "Reading tempo and key" });
+        try {
+          const { track, duplicate } = await importToLibrary(file, await loadTracks());
+          if (!duplicate) setTracks(list => list ? [track, ...list] : [track]);
+          toast.update(id, "success", duplicate ? `${track.title} is already in the library` : `${track.title} added to the library`);
+          if (track.stems) openRef.current(track.id);
+          else if (autoSplit.current) await startStemJob({ id: track.id, title: track.title, blob: track.blob, fileName: track.fileName });
+        } catch { toast.update(id, "fail", `Could not add ${file.name}`); }
+      }
+    };
+    const waiting = takePendingImports();
+    if (waiting.length) void take(waiting);
+    return onDownloaded(files => { void take(files); });
+  }, []);
+
+  const setLoopFrom = (bars: number) => { setLoop(barLoop(engine.now(), baseGrid, bars)); setLoopOn(true); };
+  const toggleLoop = () => {
+    if (!loop) { setLoopFrom(4); return; }
+    setLoopOn(on => !on);
+  };
+  const zoom = (factor: number) => setView(zoomView(shown, factor, engine.playing ? engine.now() : shown.from + shown.span / 2, total));
+
+  const toggleLoopRef = useRef(toggleLoop), zoomRef = useRef(zoom);
+  useEffect(() => { toggleLoopRef.current = toggleLoop; zoomRef.current = zoom; });
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (e.code !== "Space" || e.repeat) return;
+      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
-      if (t && (t.closest("button, input, a, [role=slider]") || t.isContentEditable)) return;
-      e.preventDefault(); void toggle();
+      if (t && (t.closest("input, textarea, [role=dialog]") || t.isContentEditable)) return;
+      const onControl = !!t?.closest("button, a, [role=slider]");
+      if (e.code === "Space" && !onControl) { e.preventDefault(); engineRef.current.toggle(); return; }
+      const k = e.key.toLowerCase();
+      if (k === "l") toggleLoopRef.current();
+      else if (k === "v") setTool("move");
+      else if (k === "r") setTool("loop");
+      else if (k === "c") setTool("cut");
+      else if (k === "=" || k === "+") zoomRef.current(0.6);
+      else if (k === "-") zoomRef.current(1 / 0.6);
+      else if (k === "0") setView(null);
+      else return;
+      e.preventDefault();
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [toggle]);
+  }, []);
 
-  // Click or drag on the ruler and lanes to move the playhead.
-  const scrub = (e: React.PointerEvent<HTMLDivElement>) => {
-    const el = media.current;
-    if (!el || !el.duration) return;
-    const box = e.currentTarget.getBoundingClientRect();
-    el.currentTime = Math.max(0, Math.min(1, (e.clientX - box.left) / box.width)) * el.duration;
-    paint();
+  const layers: TimelineLayer[] = [];
+  if (trackA) layers.push({ key: `a-${trackA.id}`, name: mode === "mix" ? "A" : null, track: trackA, placement: engineLayers[0].placement, edit: editA, peaks: peaks[trackA.id], grid: gridOf(trackA), movable: false, curve: "--data-1" });
+  if (trackA && trackB) layers.push({ key: `b-${trackB.id}`, name: "B", track: trackB, placement: engineLayers[1].placement, edit: editB, peaks: peaks[trackB.id], grid: gridOf(trackB), movable: true, curve: "--text-1" });
+
+  const focused = Math.min(focus, layers.length - 1);
+  const focusedEdit = focused === 1 ? editB : editA;
+  const both = overlap(engineLayers[0].placement, engineLayers[1].placement);
+  /** Loops the blend with 4 bars before it and 2 after, shows it and plays it. */
+  /** Lays a transition plan onto the mix: B's place and tempo, both volume curves, a curve per moved stem. */
+  const applyPlan = (plan: TransitionPlan, info: Omit<PlanInfo, "title" | "notes"> & { notes?: string[] }) => {
+    if (!trackA || !trackB) return;
+    const fit = planToMix(plan, trackA, trackB);
+    const notes = [...(info.notes ?? plan.notes ?? [])];
+    if (plan.effect !== "none") notes.push(`The ${EFFECT_OPTIONS.find(o => o.value === plan.effect)?.label.toLowerCase() ?? plan.effect} effect plays on the decks only; it is not laid out here.`);
+    const label = STEM_OPTIONS.find(o => o.value === (plan.stems ?? "none"))?.label ?? "No stem move";
+    const title = `${plan.bars} ${plan.bars === 1 ? "bar" : "bars"} · ${plan.volume} curve · ${plan.stems && plan.stems !== "none" ? label.toLowerCase() : plan.eq !== "none" ? `${plan.eq} eq` : "no stem move"}`;
+    setSaved(st => ({
+      ...st, offset: fit.offset, sync: plan.sync !== false, fade: "custom",
+      mixEdits: [
+        { ...st.mixEdits[0], cuts: [], volume: fit.volume[0], stemVolume: fit.stems[0] },
+        { ...st.mixEdits[1], cuts: [], volume: fit.volume[1], stemVolume: fit.stems[1] },
+      ],
+      plan: { ...info, notes, title },
+    }));
+    const bar = baseGrid ? baseGrid.beat * 4 : 2;
+    setLoop({ from: Math.max(0, fit.span.from - 4 * bar), to: fit.span.to + 2 * bar }); setLoopOn(false);
+    const pad = baseGrid ? baseGrid.beat * 32 : 15;
+    setView({ from: Math.max(0, fit.span.from - pad), span: fit.span.to - fit.span.from + 2 * pad });
+    engine.seek(Math.max(0, fit.span.from - 4 * bar));
   };
-  const set = <T,>(list: T[], k: number, v: T) => list.map((x, i) => i === k ? v : x);
+  const asTrack = (t: StoredTrack): Track => ({ ...t, url: "" });
+  /** The decks' own automatic planner, on this pair. */
+  const autoBlend = () => {
+    if (!trackA || !trackB) return;
+    try {
+      const r = planTransition(asTrack(trackA), asTrack(trackB));
+      applyPlan(r.plan, { by: "auto", score: Math.round(r.score) });
+      toast.success("Automatic blend laid out", { description: "Preview it, or ask the AI for a second opinion." });
+    } catch { toast.fail("Could not plan this pair"); }
+  };
+  /** The local model through /api/mix, given the automatic plan to improve on, as the decks' AI plan does. */
+  const [planning, setPlanning] = useState(false);
+  const [allNotes, setAllNotes] = useState(false);
+  const aiBlend = async () => {
+    if (!trackA || !trackB || planning) return;
+    const id = "stems-ai-blend";
+    setPlanning(true);
+    toast.loading(`AI is planning ${trackA.title} into ${trackB.title}`, { id, description: "On the local model; the first answer can take a minute." });
+    try {
+      const auto = planTransition(asTrack(trackA), asTrack(trackB)).plan;
+      const res = await fetch("/api/mix", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ from: mixFeatures(asTrack(trackA)), to: mixFeatures(asTrack(trackB)), auto }) });
+      const body = await res.json() as { plan?: Partial<TransitionPlan>; model?: string; error?: string };
+      if (!res.ok || !body.plan) throw new Error(body.error ?? "The AI plan failed");
+      applyPlan({ ...auto, ...body.plan } as TransitionPlan, { by: "ai", model: body.model });
+      toast.update(id, "success", "AI blend laid out. Preview it.");
+    } catch (e) {
+      toast.update(id, "fail", e instanceof Error ? e.message : "The AI plan failed");
+    } finally { setPlanning(false); }
+  };
+  const previewBlend = () => {
+    if (!both) return;
+    const bar = baseGrid ? baseGrid.beat * 4 : 2;
+    const l = { from: Math.max(0, floorTo(both.from, baseGrid, 4) - 4 * bar), to: Math.min(total, both.to + 2 * bar) };
+    setLoop(l); setLoopOn(true); setView(blendView());
+    engine.seek(l.from);
+    if (!engine.playing) void engine.play();
+  };
+  const swap = (stems: number[]) => {
+    if (!trackA || !trackB || !both) return;
+    const at = Math.min(both.to, Math.max(both.from, floorTo(engine.now(), baseGrid, 4)));
+    setSaved(s => {
+      let [a, b] = s.mixEdits;
+      for (const k of stems) [a, b] = swapStem(a, engineLayers[0].placement, b, engineLayers[1].placement, k, at, () => crypto.randomUUID());
+      return { ...s, mixEdits: [a, b] };
+    });
+    toast.success(`${stems.length === 4 ? "Everything" : STEMS[stems[0]].label} swaps at ${barNumber(at, baseGrid) ? `bar ${barNumber(at, baseGrid)}` : formatTime(at)}`);
+  };
+  const cutCount = layers.reduce((n, l) => n + l.edit.cuts.length, 0);
+  const stemCurves = layers.some(l => l.edit.stemVolume?.some(c => c.length > 0));
+  const anyReading = [trackA, trackB].some(t => t && reading[t.id] === "reading");
+  const anyFailed = [trackA, trackB].some(t => t && reading[t.id] === "failed");
+  const bBar = trackB && baseGrid ? barNumber(saved.offset + (gridOf(trackB)?.first ?? 0) / ratioB, baseGrid) : null;
 
   return <div className="flex min-h-dvh flex-col bg-page text-text-1">
     <div className="px-4 pt-4">
       <header className="flex h-12 items-stretch border border-line bg-panel">
         <Link href="/" className="flex items-center gap-2 border-e border-line px-4 type-label text-text-2 hover:text-text-1"><Icon icon={ArrowLeft}/>Decks</Link>
         <h1 className="flex items-center px-4 type-heading-sm">Stems</h1>
+        <div className="flex items-center border-s border-line px-4">
+          <SegmentedControl size="sm" aria-label="Mode" value={mode} onValueChange={v => { engine.pause(); patch({ mode: v as Mode }); }}>
+            <SegmentedControlItem value="edit">Edit</SegmentedControlItem>
+            <SegmentedControlItem value="mix">Mix</SegmentedControlItem>
+          </SegmentedControl>
+        </div>
         <div className="ms-auto flex items-center border-s border-line px-4">
-          <Status size="sm" status={state === "reading" ? "running" : state === "failed" ? "fail" : "idle"}>
-            {state === "reading" ? "Reading waveforms" : state === "failed" ? "Could not read" : track ? "Ready" : "Pick a track"}
+          <Status size="sm" status={anyReading ? "running" : anyFailed ? "fail" : "idle"}>
+            {anyReading ? "Reading waveforms" : anyFailed ? "Could not read" : trackA ? "Ready" : mode === "mix" ? "Pick two tracks" : "Pick a track"}
           </Status>
         </div>
       </header>
@@ -323,22 +417,32 @@ export function StemsView() {
 
     <main className="flex min-h-0 flex-1 flex-col gap-4 p-4 lg:flex-row">
       <section className="h-fit border border-line bg-panel lg:w-72 lg:shrink-0" aria-labelledby="tracks">
-        <div className="flex h-12 items-center border-b border-line px-4"><h2 id="tracks" className="type-heading-sm">Tracks</h2></div>
+        <div className="flex h-12 items-center gap-2 border-b border-line ps-4 pe-2">
+          <h2 id="tracks" className="type-heading-sm">Tracks</h2>
+          <Button className="ms-auto" size="sm" variant="secondary" onClick={() => setLinkOpen(true)}><Icon icon={Download}/>Import link</Button>
+        </div>
         {all === null ? <p className="p-4 type-body-sm text-text-3">Loading the library…</p>
-          : all.length === 0 ? <p className="p-4 type-body-sm text-text-2">The library is empty. Add tracks on the decks page.</p>
+          : all.length === 0 ? <p className="p-4 type-body-sm text-text-2">The library is empty. Import a link above, or add files on the decks page.</p>
           : <>
-            {ready.length === 0 && <p className="p-4 type-body-sm text-text-2">No track has stems yet. Split one from the stems pads on the decks page; it shows up here.</p>}
+            {ready.length === 0 && <p className="p-4 type-body-sm text-text-2">No track has stems yet. Split one below; it shows up here.</p>}
+            {mode === "mix" && ready.length > 0 && <p className="border-b border-line-faint px-4 py-2 type-body-sm text-text-3">Put one track in A and the one that comes in after it in B.</p>}
             <ul className="divide-y divide-line-faint">
-              {ready.map(t => <li key={t.id}>
-                <Button variant={selected === t.id ? "secondary" : "ghost"} size="sm" onClick={() => pick(t.id)} aria-pressed={selected === t.id} className="w-full justify-between">
-                  <span className="min-w-0 truncate">{t.title}</span>
-                  {t.bpm ? <span className="shrink-0 text-text-3">{Math.round(t.bpm)}</span> : null}
-                </Button>
+              {ready.map(t => <li key={t.id} className="flex items-center gap-1 pe-2">
+                {mode === "edit"
+                  ? <Button variant={selected === t.id ? "secondary" : "ghost"} size="sm" onClick={() => pickEdit(t.id)} aria-pressed={selected === t.id} className="w-full justify-between">
+                    <span className="min-w-0 truncate">{t.title}</span>
+                    {t.bpm ? <span className="shrink-0 text-text-3">{Math.round(t.bpm)}</span> : null}
+                  </Button>
+                  : <>
+                    <span className="min-w-0 flex-1 truncate ps-4 type-body-sm text-text-1">{t.title}</span>
+                    {t.bpm ? <span className="shrink-0 type-code-sm text-text-3">{Math.round(t.bpm)}</span> : null}
+                    <Button size="icon-sm" variant={saved.a === t.id ? "primary" : "ghost"} aria-pressed={saved.a === t.id} aria-label={`Put ${t.title} in A`} onClick={() => pickMix("a", t.id)}><span className="type-label-sm">A</span></Button>
+                    <Button size="icon-sm" variant={saved.b === t.id ? "primary" : "ghost"} aria-pressed={saved.b === t.id} aria-label={`Put ${t.title} in B`} onClick={() => pickMix("b", t.id)}><span className="type-label-sm">B</span></Button>
+                  </>}
               </li>)}
             </ul>
             {missing.length > 0 && <div className="border-t border-line">
               <p className="px-4 py-2 type-label-sm text-text-3">Without stems</p>
-              {splitError && <p role="alert" className="px-4 pb-2 type-body-sm text-fail-text">{splitError}</p>}
               <ul className="divide-y divide-line-faint border-t border-line-faint">
                 {missing.map(t => <li key={t.id} className="flex items-center gap-2 px-4 py-1">
                   <span className="min-w-0 flex-1 truncate type-body-sm text-text-2">{t.title}</span>
@@ -352,82 +456,158 @@ export function StemsView() {
       </section>
 
       <section className="min-w-0 flex-1 border border-line bg-panel" aria-labelledby="playlist">
-        <div className="flex h-12 items-center gap-2 border-b border-line px-4">
-          <Button size="icon-sm" variant="secondary" onClick={rewind} disabled={!track} aria-label="Back to start"><Icon icon={Previous}/></Button>
-          <Button size="icon-sm" onClick={() => void toggle()} disabled={!track} aria-label={playing ? "Pause" : "Play"}><Icon icon={playing ? Pause : Play}/></Button>
-          <span className="type-code-sm text-text-1"><span ref={clock}>0:00</span><span className="text-text-3"> / {formatTime(duration || track?.duration || 0)}</span></span>
-          <h2 id="playlist" className="ms-auto min-w-0 truncate type-heading-sm">{track ? track.title : "Playlist"}</h2>
+        {/* Transport, loop, tools and zoom. */}
+        <div className="flex min-h-12 flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-2">
+          <Button size="icon-sm" variant="secondary" onClick={() => engine.seek(loopOn && loop ? loop.from : 0)} disabled={!trackA} aria-label="Back to start"><Icon icon={Previous}/></Button>
+          <Button size="icon-sm" onClick={engine.toggle} disabled={!trackA} aria-label={engine.playing ? "Pause" : "Play"}><Icon icon={engine.playing ? Pause : Play}/></Button>
+          <span className="type-code-sm text-text-1"><span ref={clock}>0:00</span><span className="text-text-3"> / {formatTime(total)}</span></span>
+          <span ref={barText} className="w-16 type-code-sm text-text-3"/>
+          <span className="h-6 border-s border-line" aria-hidden="true"/>
+          <Button size="sm" variant={loopOn ? "primary" : "secondary"} aria-pressed={loopOn} disabled={!trackA} onClick={toggleLoop}><Icon icon={Repeat}/>Loop</Button>
+          <div className="flex items-center" role="group" aria-label="Loop length in bars">
+            {LOOP_BARS.map(n => <Button key={n} size="sm" variant="ghost" disabled={!trackA} aria-label={`Loop ${n} ${n === 1 ? "bar" : "bars"} from the playhead`} onClick={() => setLoopFrom(n)}>{n}</Button>)}
+          </div>
+          <span className="w-24 type-code-sm text-text-2">
+            {!loop ? <span className="text-text-3">No loop</span> : baseGrid ? barSpan(barNumber(loop.from + 1e-3, baseGrid)!, barNumber(loop.to - 1e-3, baseGrid)!) : `${formatTime(loop.from)}–${formatTime(loop.to)}`}
+          </span>
+          <Button size="sm" variant="ghost" disabled={!loop} onClick={() => { setLoop(null); setLoopOn(false); }}>Clear loop</Button>
+          <div className="ms-auto flex items-center" role="group" aria-label="Zoom">
+            <Button size="icon-sm" variant="ghost" disabled={!trackA} aria-label="Zoom out" onClick={() => zoom(1 / 0.6)}><Icon icon={Subtract}/></Button>
+            <Button size="icon-sm" variant="ghost" disabled={!trackA} aria-label="Zoom in" onClick={() => zoom(0.6)}><Icon icon={Add}/></Button>
+            <Button size="icon-sm" variant="ghost" disabled={!view} aria-label="Fit the whole timeline" onClick={() => setView(null)}><Icon icon={Shrink}/></Button>
+          </div>
         </div>
 
-        {track && <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line px-4 py-2">
+        {/* Tools: what a drag on the lanes does, what it snaps to, how a mute opens and closes. */}
+        {trackA && <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-2">
+          <span className="type-label-sm text-text-3">Tool</span>
+          <SegmentedControl size="sm" aria-label="Tool" value={tool} onValueChange={v => setTool(v as Tool)}>
+            <SegmentedControlItem value="move">Move</SegmentedControlItem>
+            <SegmentedControlItem value="loop">Loop</SegmentedControlItem>
+            <SegmentedControlItem value="cut">Mute</SegmentedControlItem>
+            <SegmentedControlItem value="volume">Volume</SegmentedControlItem>
+          </SegmentedControl>
+          <span className="ms-2 type-label-sm text-text-3">Snap</span>
+          <Pick aria-label="Snap" items={SNAP_OPTIONS} value={snap} onValueChange={v => patch({ snap: v })} className="w-28"/>
+          <span className="ms-2 type-label-sm text-text-3">Mute edges</span>
+          <Pick aria-label="Mute edges" items={EDGE_OPTIONS} value={edge} onValueChange={v => patch({ edge: v })} className="w-32"/>
+          <span className="type-body-sm text-text-3">{tool === "move" ? "Click or drag the lanes to move the playhead." : tool === "loop" ? "Drag across the lanes to set the loop." : tool === "cut" ? "Drag on a stem's lane to mute it there; click a mute to remove it."
+            : "On the volume lanes: click to add a point, drag it, double-click to remove it."}</span>
+        </div>}
+
+        {trackA && <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line px-4 py-2">
           <span className="type-label-sm text-text-3">Speed</span>
-          <div className="w-48"><Slider aria-label="Playback speed" min={50} max={150} value={Math.round(speed * 100)}
-            onValueChange={v => setSpeed((Array.isArray(v) ? v[0] : v) / 100)}/></div>
+          <div className="w-40"><Slider aria-label="Playback speed" min={50} max={150} value={Math.round(speed * 100)} onValueChange={v => setSpeed(first(v) / 100)}/></div>
           <span className="w-12 type-code-sm text-text-1">{Math.round(speed * 100)}%</span>
-          {track.bpm ? <span className="type-code-sm text-text-2">{(track.bpm * speed).toFixed(1)} BPM</span> : null}
+          {trackA.bpm ? <span className="type-code-sm text-text-2">{(trackA.bpm * speed).toFixed(1)} BPM</span> : null}
           <label className="flex items-center gap-2 type-label-sm text-text-2"><Switch checked={keepPitch} onCheckedChange={setKeepPitch} aria-label="Keep pitch"/>Keep pitch</label>
           {!keepPitch && speed !== 1 && <span className="type-code-sm text-text-3">{(12 * Math.log2(speed)).toFixed(1)} st</span>}
           <Button size="sm" variant="ghost" disabled={speed === 1} onClick={() => setSpeed(1)}>Reset</Button>
         </div>}
 
-        {track && <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-line px-4 py-2">
+        {/* Mix: where B comes in, its tempo, and stem swaps at the playhead. */}
+        {mode === "mix" && trackA && trackB && <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line px-4 py-2">
+          <span className="type-label-sm text-text-3">B starts</span>
+          <div className="flex items-center gap-1">
+            <Button size="icon-sm" variant="secondary" aria-label="B one bar earlier" onClick={() => patch({ offset: Math.max(-engineLayers[1].placement.duration / ratioB + 1, saved.offset - (baseGrid ? baseGrid.beat * 4 : 2)) })}><Icon icon={Subtract}/></Button>
+            <span className="w-20 text-center type-code-sm text-text-1">{bBar !== null ? `Bar ${bBar}` : formatTime(saved.offset)}</span>
+            <Button size="icon-sm" variant="secondary" aria-label="B one bar later" onClick={() => patch({ offset: saved.offset + (baseGrid ? baseGrid.beat * 4 : 2) })}><Icon icon={Add}/></Button>
+          </div>
+          <Button size="sm" variant="primary" disabled={!both} onClick={previewBlend}><Icon icon={Repeat}/>Preview blend</Button>
+          <Button size="sm" variant="ghost" disabled={!both} onClick={() => setView(blendView())}>Zoom to blend</Button>
+          <label className="flex items-center gap-2 type-label-sm text-text-2">
+            <Switch checked={sync} onCheckedChange={v => setSaved(s => {
+              const r = v ? syncRatio(trackA.bpm, trackB.bpm) : 1;
+              return { ...s, sync: v, offset: alignOffset(s.offset, gridOf(trackA), gridOf(trackB), r, 4) };
+            })} aria-label="Sync B to A's tempo"/>Sync tempo
+          </label>
+          {trackB.bpm ? <span className="type-code-sm text-text-2">B {trackB.bpm.toFixed(1)}{ratioB !== 1 ? ` → ${(trackB.bpm * ratioB).toFixed(1)}` : ""} BPM</span> : null}
+          <span className="h-6 border-s border-line" aria-hidden="true"/>
+          <span className="type-label-sm text-text-3">Swap at playhead</span>
+          <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Swap a stem from A to B at the playhead">
+            {SWAPS.map(s => <Button key={s.label} size="sm" variant="secondary" disabled={!both} onClick={() => swap(s.stems)}>{s.label}</Button>)}
+          </div>
+          <Button size="sm" variant="ghost" disabled={!cutCount && !stemCurves} onClick={() => patch({ mixEdits: [{ ...storedA, cuts: [], stemVolume: [] }, { ...storedB, cuts: [], stemVolume: [] }] })}>Clear stem moves</Button>
+          <span className="h-6 border-s border-line" aria-hidden="true"/>
+          <span className="type-label-sm text-text-3">Fade</span>
+          <Pick aria-label="Fade shape" className="w-28" items={FADE_OPTIONS} value={saved.fade}
+            onValueChange={v => patch(v === "custom" ? { fade: "custom", mixEdits: [{ ...storedA, volume: editA.volume }, { ...storedB, volume: editB.volume }] }
+              : { fade: v as FadeShape, mixEdits: [{ ...storedA, volume: [] }, { ...storedB, volume: [] }] })}/>
+        </div>}
+
+        {/* Planning: the decks' automatic planner and the local model lay the whole blend out in one go. */}
+        {mode === "mix" && trackA && trackB && <div className="border-b border-line px-4 py-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <span className="type-label-sm text-text-3">Plan</span>
+            <Button size="sm" variant="secondary" onClick={autoBlend}><Icon icon={Lightning}/>Auto blend</Button>
+            <Button size="sm" variant="secondary" disabled={!aiAvailable || planning} pending={planning} pendingLabel="Planning" onClick={() => void aiBlend()}
+              title={aiAvailable ? undefined : "Start Ollama with the model pulled to use the AI plan"}><Icon icon={Sparkles}/>AI blend</Button>
+            {!aiAvailable && <span className="type-body-sm text-text-3">AI needs Ollama running with its model.</span>}
+            {saved.plan && <span className="type-body-sm text-text-2">
+              {saved.plan.by === "ai" ? `AI${saved.plan.model ? ` (${saved.plan.model})` : ""}` : "Automatic"}: {saved.plan.title}{saved.plan.score !== undefined ? ` · score ${saved.plan.score}` : ""}
+            </span>}
+          </div>
+          {saved.plan && saved.plan.notes.length > 0 && <>
+            <ul className="mt-2 flex flex-col gap-1">
+              {(allNotes ? saved.plan.notes : saved.plan.notes.slice(0, 3)).map((n, i) => <li key={i} className="type-body-sm text-text-2">{n}</li>)}
+            </ul>
+            {saved.plan.notes.length > 3 && <Button className="mt-1" size="sm" variant="ghost" onClick={() => setAllNotes(v => !v)}>
+              {allNotes ? "Show fewer notes" : `Show all ${saved.plan.notes.length} notes`}
+            </Button>}
+          </>}
+        </div>}
+
+        {/* The deck chain of one layer: volume, EQ, color filter, effect. */}
+        {trackA && <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-line px-4 py-2">
+          {layers.length > 1 && <SegmentedControl size="sm" aria-label="Layer the mixer edits" value={String(focused)} onValueChange={v => setFocus(Number(v))}>
+            <SegmentedControlItem value="0">A</SegmentedControlItem>
+            <SegmentedControlItem value="1">B</SegmentedControlItem>
+          </SegmentedControl>}
+          <div className="flex items-center gap-2">
+            <span className="type-label-sm text-text-3">Vol</span>
+            <div className="w-24"><Slider aria-label="Layer volume" min={0} max={150} value={Math.round(focusedEdit.mix.volume * 100)} onValueChange={v => setMix(focused, { volume: first(v) / 100 })}/></div>
+            <span className="w-9 type-code-sm text-text-2">{Math.round(focusedEdit.mix.volume * 100)}</span>
+          </div>
           {(["Low", "Mid", "High"] as const).map((name, i) => <div key={name} className="flex items-center gap-2">
             <span className="w-8 type-label-sm text-text-3">{name}</span>
-            <div className="w-28"><Slider aria-label={`${name} EQ`} min={-24} max={12} value={eq[i]} onValueChange={v => setEq(e => e.map((x, j) => j === i ? (Array.isArray(v) ? v[0] : v) : x))}/></div>
-            <span className="w-14 type-code-sm text-text-2">{eq[i] <= -24 ? "kill" : `${eq[i] > 0 ? "+" : ""}${eq[i]} dB`}</span>
+            <div className="w-24"><Slider aria-label={`${name} EQ`} min={-24} max={12} value={focusedEdit.mix.eq[i]}
+              onValueChange={v => setMix(focused, { eq: focusedEdit.mix.eq.map((x, j) => j === i ? first(v) : x) as [number, number, number] })}/></div>
+            <span className="w-14 type-code-sm text-text-2">{focusedEdit.mix.eq[i] <= -24 ? "kill" : `${focusedEdit.mix.eq[i] > 0 ? "+" : ""}${focusedEdit.mix.eq[i]} dB`}</span>
           </div>)}
           <div className="flex items-center gap-2">
             <span className="w-12 type-label-sm text-text-3">Filter</span>
-            <div className="w-32"><Slider aria-label="Filter" min={-100} max={100} value={Math.round(color * 100)} onValueChange={v => setColor((Array.isArray(v) ? v[0] : v) / 100)}/></div>
-            <span className="w-12 type-code-sm text-text-2">{Math.abs(color) < 0.02 ? "off" : color < 0 ? "LP" : "HP"}</span>
+            <div className="w-28"><Slider aria-label="Layer filter" min={-100} max={100} value={Math.round(focusedEdit.mix.color * 100)} onValueChange={v => setMix(focused, { color: first(v) / 100 })}/></div>
+            <span className="w-8 type-code-sm text-text-2">{Math.abs(focusedEdit.mix.color) < 0.02 ? "off" : focusedEdit.mix.color < 0 ? "LP" : "HP"}</span>
           </div>
           <div className="flex items-center gap-2">
             <span className="type-label-sm text-text-3">Effect</span>
-            <SegmentedControl size="sm" aria-label="Effect" value={fx} onValueChange={v => setFx(v as EffectName)}>
-              <SegmentedControlItem value="off">Off</SegmentedControlItem>
-              {EFFECTS.map(e => <SegmentedControlItem key={e.id} value={e.id}>{e.label}</SegmentedControlItem>)}
-            </SegmentedControl>
-            <div className="w-24"><Slider aria-label="Effect amount" min={0} max={100} disabled={fx === "off"} value={Math.round(fxAmount * 100)} onValueChange={v => setFxAmount((Array.isArray(v) ? v[0] : v) / 100)}/></div>
+            <Pick aria-label="Effect" className="w-28" items={[{ value: "off", label: "Off" }, ...EFFECTS.map(e => ({ value: e.id, label: e.label }))]} value={focusedEdit.mix.fx} onValueChange={v => setMix(focused, { fx: v as EffectName })}/>
+            <div className="w-24"><Slider aria-label="Effect amount" min={0} max={100} disabled={focusedEdit.mix.fx === "off"} value={Math.round(focusedEdit.mix.fxAmount * 100)} onValueChange={v => setMix(focused, { fxAmount: first(v) / 100 })}/></div>
           </div>
-          <Button size="sm" variant="ghost" disabled={eq.every(x => x === 0) && color === 0 && fx === "off"} onClick={() => { setEq([0, 0, 0]); setColor(0); setFx("off"); }}>Reset mixer</Button>
+          <Button size="sm" variant="ghost" onClick={() => updateEdit(focused, e => ({ ...e, mix: makeLayerMix(), strips: makeTrackEdit().strips }))}>Reset channels</Button>
+          {mode === "edit" && <Button size="sm" variant="ghost" disabled={!cutCount} onClick={() => onCuts(0, () => [])}>Clear mutes</Button>}
+          {mode === "edit" && <Button size="sm" variant="ghost" disabled={!editA.volume?.length} onClick={() => onVolume(0, [])}>Flat volume</Button>}
         </div>}
 
-        {!track ? <p className="p-4 type-body-sm text-text-2">Choose a track to see its vocals, drums, bass and melody on their own lanes.</p>
-          : <div className="flex overflow-hidden">
-            <div className="w-44 shrink-0 border-e border-line">
-              <div className="h-7 border-b border-line"/>
-              {STEMS.map((s, k) => {
-                const audible = solo.some(Boolean) ? solo[k] : !mute[k];
-                return <div key={s.id} className="flex h-24 flex-col justify-between border-b border-line-faint px-3 py-2 last:border-b-0">
-                  <div className="flex items-center gap-2">
-                    <span className={cn("size-(--marker) shrink-0 bg-(--swatch)", !audible && "opacity-30")} style={{ "--swatch": `var(${LANE_COLORS[k]})` } as React.CSSProperties} aria-hidden="true"/>
-                    <span className="min-w-0 flex-1 truncate type-label text-text-1">{s.label}</span>
-                    <Button size="icon-sm" variant={mute[k] ? "primary" : "secondary"} aria-pressed={mute[k]} aria-label={`Mute ${s.label}`}
-                      onClick={() => setMute(m => set(m, k, !m[k]))}><span className="type-label-sm">M</span></Button>
-                    <Button size="icon-sm" variant={solo[k] ? "primary" : "secondary"} aria-pressed={solo[k]} aria-label={`Solo ${s.label}`}
-                      onClick={() => setSolo(m => set(m, k, !m[k]))}><span className="type-label-sm">S</span></Button>
-                  </div>
-                  <Slider aria-label={`${s.label} level`} min={0} max={100} value={Math.round(level[k] * 100)}
-                    onValueChange={v => setLevel(l => set(l, k, (Array.isArray(v) ? v[0] : v) / 100))}/>
-                </div>;
-              })}
-            </div>
-
-            <div className="relative min-w-0 flex-1 touch-none select-none"
-              onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); scrub(e); }}
-              onPointerMove={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) scrub(e); }}>
-              <div className="border-b border-line"><Ruler duration={duration || track.duration} grid={grid}/></div>
-              {STEMS.map((s, k) => {
-                const audible = solo.some(Boolean) ? solo[k] : !mute[k];
-                return <div key={s.id} className="border-b border-line-faint last:border-b-0">
-                  <Lane peaks={peaks?.[k]} color={LANE_COLORS[k]} dim={!audible} duration={duration || track.duration} grid={grid}/>
-                </div>;
-              })}
-              <div ref={playhead} className="pointer-events-none absolute inset-y-0 left-0 w-px bg-accent-edge" aria-hidden="true"/>
-            </div>
-          </div>}
+        {!trackA ? <p className="p-4 type-body-sm text-text-2">{mode === "mix"
+          ? "Choose a track for A and one for B. B is synced to A's tempo and placed 16 bars before A ends; drag its clip to move it."
+          : "Choose a track to see its vocals, drums, bass and melody on their own lanes."}</p>
+          : <>
+            {mode === "mix" && !trackB && <p className="border-b border-line px-4 py-2 type-body-sm text-text-2">Choose a track for B to mix it with A.</p>}
+            <Timeline layers={layers} total={total} view={shown} onView={v => setView(v)} baseGrid={baseGrid} tool={tool} snapBeats={Number(snap)}
+              loop={loop} loopOn={loopOn} playhead={playhead} onSeek={t => engine.seek(t)}
+              onLoop={l => { setLoop(l); if (l) setLoopOn(true); }} onCuts={onCuts} onStrip={onStrip}
+              onOffset={(_, offset) => patch({ offset })} onVolume={onVolume}/>
+            {shown.span < total && <div className="flex items-center gap-3 border-t border-line px-4 py-2">
+              <span className="type-label-sm text-text-3">Scroll</span>
+              <Slider className="flex-1" aria-label="Scroll the timeline" min={0} max={1000} value={Math.round(shown.from / Math.max(1e-6, total - shown.span) * 1000)}
+                onValueChange={v => setView({ from: first(v) / 1000 * (total - shown.span), span: shown.span })}/>
+            </div>}
+          </>}
       </section>
     </main>
-    <p className="shrink-0 px-4 pb-4 type-label-sm text-text-3">Space play · click or drag the lanes to move · M mute · S solo</p>
+    <p className="shrink-0 px-4 pb-4 type-label-sm text-text-3">Space play · L loop · V move · R draw loop · C draw mutes · drag the ruler to loop · ctrl and wheel to zoom · + − 0 zoom</p>
+    <LinkImport open={linkOpen} onOpenChange={setLinkOpen} split={saved.autoSplit} onSplitChange={v => patch({ autoSplit: v })}/>
   </div>;
 }
+

@@ -1,6 +1,6 @@
 import { holdAt, pointCount, rampChain, releaseTo, sampleCurve } from "@/lib/automation";
-import { centsOf, colorCutoffs, ensureRack, type DeckGraph, type SendKind } from "@/lib/deck-graph";
-import { echoBeatsOf, effectOf, effectSend, effectUsesColor, lowOf, stemsOf, volumeOf } from "@/lib/transition";
+import { centsOf, colorCutoffs, ensurePitch, ensureRack, lpRestHz, pitchTap, pitchWetShare, type DeckGraph, type SendKind } from "@/lib/deck-graph";
+import { echoBeatsOf, effectOf, effectSend, effectUsesColor, hasMotion, lowOf, pitchOf, semitoneRatio, speedOf, stemsOf, volumeOf } from "@/lib/transition";
 import type { TransitionPlan } from "@/lib/types";
 
 /* A transition as AudioParam automation.
@@ -23,7 +23,7 @@ const ANCHOR_LEAD = 0.06;
 export const RELEASE = 0.25;
 
 export type MixSpec = {
-  plan: Pick<TransitionPlan, "volume" | "eq" | "effect" | "stems"> & Partial<Pick<TransitionPlan, "curve" | "eqAt" | "intensity" | "echoBeats">>;
+  plan: Pick<TransitionPlan, "volume" | "eq" | "effect" | "stems"> & Partial<Pick<TransitionPlan, "curve" | "eqAt" | "intensity" | "echoBeats" | "stemMoves" | "stemCurves" | "pitch" | "speed">>;
   from: DeckGraph;
   to: DeckGraph;
   /** Context time of progress 0. */
@@ -39,6 +39,9 @@ export type MixSpec = {
   handover: boolean;
   /** Context seconds per beat of the outgoing track, so a transition's echo repeats on the beat. */
   beat?: number;
+  /** The decks' tempo moves change their pitch too (a buffer source resamples), so the shifter takes the speed back out
+      of the drawn pitch. Decks play media elements that keep pitch, and leave this off. */
+  speedMovesPitch?: boolean;
 };
 
 type Lane = {
@@ -77,8 +80,9 @@ export class MixSession {
   constructor(private readonly ctx: BaseAudioContext, private readonly spec: MixSpec) {
     this.at = spec.start; this.len = Math.max(0.05, spec.duration); this.end = this.at + this.len;
     const { plan, from, to } = spec;
-    const nyquist = ctx.sampleRate / 2;
-    const lp = (hz: number) => centsOf(Math.min(hz >= 20000 ? nyquist : hz, nyquist));
+    // A low pass never goes to Nyquist itself: its poles would sit on the unit circle and the filter would blow up.
+    const lpRest = lpRestHz(ctx);
+    const lp = (hz: number) => centsOf(Math.min(hz >= 20000 ? lpRest : hz, lpRest));
     const lanes: Lane[] = [];
     const add = (lane: Lane) => lanes.push(lane);
 
@@ -95,7 +99,7 @@ export class MixSession {
     }
     if (effectUsesColor(plan.effect)) {
       for (const [deck, side] of [[from, "outColor"], [to, "inColor"]] as const) {
-        add({ param: deck.mix.lp.detune, value: t => lp(colorCutoffs(effectOf(plan, t)[side]).lp), rest: centsOf(nyquist) });
+        add({ param: deck.mix.lp.detune, value: t => lp(colorCutoffs(effectOf(plan, t)[side]).lp), rest: centsOf(lpRest) });
         add({ param: deck.mix.hp.detune, value: t => centsOf(colorCutoffs(effectOf(plan, t)[side]).hp), rest: centsOf(colorCutoffs(0).hp) });
       }
     }
@@ -108,9 +112,22 @@ export class MixSession {
       add({ param: from.mix.send.gain, value: t => Math.min(0.95, effectOf(plan, t).amount * 0.7), rest: 0 });
       add({ param: from.mix.dry.gain, value: t => { const e = effectOf(plan, t); return Math.max(0, 1 - e.amount * 0.25 - e.wash); }, rest: 1 });
     }
+    // Pitch: the drawn shift per side through the deck's shifter, with the dry signal handing over to it as soon as it is
+    // heard. A speed move that also moves the pitch (a preview resamples) is taken back out here.
+    if (hasMotion(plan.pitch) || (spec.speedMovesPitch && hasMotion(plan.speed))) {
+      for (const [deck, side] of [[from, "out"], [to, "in"]] as const) {
+        const shifter = ensurePitch(ctx, deck);
+        const ratio = (t: number) => semitoneRatio(pitchOf(plan, t)[side]) / (spec.speedMovesPitch ? speedOf(plan, t)[side] : 1);
+        add({ param: deck.mix.pitchDry.gain, value: t => Math.cos(pitchWetShare(ratio(t)) * Math.PI / 2), rest: 1 });
+        add({ param: deck.mix.pitchWet.gain, value: t => Math.sin(pitchWetShare(ratio(t)) * Math.PI / 2), rest: 0 });
+        for (const delay of shifter.delays) add({ param: delay.delayTime, value: t => pitchTap(ratio(t)).delay, rest: pitchTap(1).delay });
+        for (const slope of shifter.slopes) add({ param: slope.gain, value: t => pitchTap(ratio(t)).slope, rest: 0 });
+      }
+    }
     if (spec.handover) {
       // One lane per stem and side, only where the move changes that stem.
-      const probe = [0, 0.25, 0.5, 0.75, 1].map(t => stemsOf(plan, t));
+      // Probed finely: a drawn stem curve can dip and come back between coarse steps.
+      const probe = Array.from({ length: 41 }, (_, i) => stemsOf(plan, i / 40));
       for (let k = 0; k < 4; k++) {
         if (probe.some(p => p.out[k] !== 1)) add({ param: from.mix.stems[k].gain, value: t => stemsOf(plan, t).out[k], rest: 1 });
         if (probe.some(p => p.in[k] !== 1)) add({ param: to.mix.stems[k].gain, value: t => stemsOf(plan, t).in[k], rest: 1 });
