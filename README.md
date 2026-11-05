@@ -10,7 +10,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Manuekle/open-dj/actions/workflows/ci.yml"><img src="https://github.com/Manuekle/open-dj/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://manuekle.github.io/shift/"><strong>Website</strong></a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#features">Features</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Manuekle/shift/actions/workflows/ci.yml"><img src="https://github.com/Manuekle/shift/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A522-339933.svg" alt="Node.js 22 or newer">
 </p>
@@ -36,7 +42,7 @@ Shift is built with Next.js, React, TypeScript and the Web Audio API. It splits 
 You need [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine with Compose), with at least 8 GB of memory for Docker and about 10 GB of free disk.
 
 ```bash
-git clone https://github.com/Manuekle/open-dj.git && cd open-dj && docker compose up -d --build
+git clone https://github.com/Manuekle/shift.git && cd shift && docker compose up -d --build
 ```
 
 Open http://localhost:3000.
@@ -308,6 +314,8 @@ CI (`.github/workflows/ci.yml`) runs typecheck, lint and build on Node 22 for ev
 - **Recorded voice in the Studio sits early or late.** Adjust the latency slider, or nudge that single lane.
 
 ## Design
+
+The landing page at https://manuekle.github.io/shift/ is a single HTML file, `docs/index.html`, served by GitHub Pages from `main` / `/docs`. It reuses the app's Sodium dark theme and palette with no build step.
 
 The interface uses the [Sodium](https://design.how/systems/sodium) design system (dark theme), installed from the design.how registry into `src/components/sodium`. Follow `.claude/skills/sodium/SKILL.md` for UI changes and run its lint (`npx eslint -c sodium.eslint.config.mjs .`). Icons come from Hugeicons, swapped in through Sodium's single icon file (`src/components/sodium/icon.tsx`). Sodium has no rotary control or platter, so the knobs and jog wheels are flat line drawings on Sodium's line and data tokens, animated with GSAP.
 
