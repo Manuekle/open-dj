@@ -40,3 +40,5 @@ mac:
     NSMicrophoneUsageDescription: Shift listens to your voice for the voice scan and to follow the lyrics as you sing.
 dmg:
   title: Shift
+  # A name without the version, so releases/latest/download/Shift-mac-arm64.dmg always points at the newest build.
+  artifactName: Shift-mac-arm64.dmg

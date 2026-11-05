@@ -267,6 +267,8 @@ Open http://localhost:3000. Stems, lyrics and AI are optional: without Demucs th
 Shift also runs as a desktop app for Macs with Apple Silicon (macOS 13 or later). It is the same app: Electron opens a
 window on the Next.js server, which it runs itself, so the Mac needs no Node.js.
 
+Download it from [Releases](https://github.com/Manuekle/shift/releases/latest/download/Shift-mac-arm64.dmg), or build it:
+
 ```bash
 npm run desktop:build
 ```

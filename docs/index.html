@@ -186,7 +186,7 @@ h1,h2,h3,p{margin:0;font-weight:400}
 .top{position:sticky;top:0;z-index:50;background:var(--page);border-bottom:1px solid var(--line)}
 .top-in{display:flex;align-items:center;gap:20px;height:var(--head);border-top:0}
 .brand{display:flex;align-items:center;gap:10px;flex:none}
-.brand-tile{width:28px;height:28px;display:grid;place-items:center;background:#161615;border:1px solid var(--line)}
+.brand-tile{width:28px;height:28px;display:grid;place-items:center;background:linear-gradient(#fff,#e9e9e5);border-radius:7px}
 .brand-tile svg{width:18px;height:18px;color:var(--fire)}
 .nav{position:relative;display:flex;align-items:stretch;height:100%;margin-left:12px}
 .nav a{display:flex;align-items:center;padding:0 12px;font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);transition:color .2s}
@@ -553,6 +553,11 @@ input[type=range]:focus-visible::-moz-range-thumb{outline:2px solid var(--narvik
 .x-tag{text-decoration:line-through;text-decoration-color:var(--fail)}
 
 /* Install */
+.mac-dl{display:grid;gap:20px;align-items:center;padding:20px;border:1px solid var(--line);background:var(--page);margin-bottom:36px}
+@media (min-width:1000px){.mac-dl{grid-template-columns:1fr auto;padding:24px 28px}}
+.mac-dl h3{font-size:18px;margin-bottom:6px}
+.mac-dl .body-sm{max-width:62ch}
+.inst-or{display:grid;gap:8px;margin-bottom:20px}
 .inst{display:grid;grid-template-columns:1fr;border:1px solid var(--line)}
 @media (min-width:1000px){.inst{grid-template-columns:1fr 1fr}}
 .inst>*,.isteps li>div,.ai>*,.duo>*,.rhythm>*{min-width:0}
@@ -639,8 +644,8 @@ input[type=range]:focus-visible::-moz-range-thumb{outline:2px solid var(--narvik
       <div class="hero-side">
         <p class="body">Shift mixes two decks in the browser, splits tracks into stems, plans every transition and asks a local model for a second opinion. No accounts, no analytics, no cloud services.</p>
         <div class="cta">
-          <a class="btn btn-pri" href="#install">Install with Docker
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" aria-hidden="true"><path d="M3 8h9M8.5 4.5 12 8l-3.5 3.5"/></svg></a>
+          <a class="btn btn-pri" href="https://github.com/Manuekle/shift/releases/latest/download/Shift-mac-arm64.dmg"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M11.2 8.5c0-1.6 1.3-2.4 1.4-2.4-.8-1.1-2-1.3-2.4-1.3-1-.1-2 .6-2.5.6s-1.3-.6-2.2-.6C4.4 4.8 3.3 5.5 2.7 6.5c-1.2 2.1-.3 5.2.9 6.9.6.8 1.2 1.7 2.1 1.7.8 0 1.2-.5 2.2-.5s1.3.5 2.2.5c.9 0 1.5-.8 2-1.7.6-.9.9-1.8.9-1.9 0 0-1.8-.7-1.8-3zM9.6 3.6c.5-.6.8-1.4.7-2.2-.7 0-1.6.5-2.1 1.1-.5.5-.9 1.4-.8 2.2.8.1 1.7-.4 2.2-1.1z"/></svg>Download for Mac</a>
+          <a class="btn btn-sec" href="#install">Run from the repo</a>
           <button class="btn btn-sec" id="soundBtn" type="button" aria-pressed="false">
             <span class="eq-ico" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
             <span id="soundLbl">Hear the demo mix</span></button>
@@ -1057,9 +1062,20 @@ input[type=range]:focus-visible::-moz-range-thumb{outline:2px solid var(--narvik
     <div class="sec-head pad"><span class="lbl num">11</span><span class="lbl t2">Install</span><span class="sp"></span><span class="lbl-sm t3">MIT license</span></div>
     <div class="pad full">
       <div class="full-head" data-reveal>
-        <h2 class="title">One command, then open localhost.</h2>
-        <p class="body">You need Docker Desktop with at least 8 GB of memory and about 10 GB of free disk. The first run takes 10 to 15 minutes, mostly downloads. Later starts take seconds.</p>
+        <h2 class="title">Download the Mac app, or run it from the repo.</h2>
+        <p class="body">Both are the same Shift. The Mac app opens like any other app; the repo runs on any machine with Docker and opens in your browser.</p>
       </div>
+      <div class="mac-dl" data-reveal="2">
+        <div>
+          <h3>Shift for Mac</h3>
+          <p class="body-sm">Apple Silicon (M1 or later), macOS 13 or later. Open the .dmg and drag Shift to Applications. The first time, right-click Shift and pick Open. Stems, lyrics and AI use ffmpeg, whisper.cpp and Ollama from Homebrew.</p>
+        </div>
+        <div class="cta">
+          <a class="btn btn-pri" href="https://github.com/Manuekle/shift/releases/latest/download/Shift-mac-arm64.dmg"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M11.2 8.5c0-1.6 1.3-2.4 1.4-2.4-.8-1.1-2-1.3-2.4-1.3-1-.1-2 .6-2.5.6s-1.3-.6-2.2-.6C4.4 4.8 3.3 5.5 2.7 6.5c-1.2 2.1-.3 5.2.9 6.9.6.8 1.2 1.7 2.1 1.7.8 0 1.2-.5 2.2-.5s1.3.5 2.2.5c.9 0 1.5-.8 2-1.7.6-.9.9-1.8.9-1.9 0 0-1.8-.7-1.8-3zM9.6 3.6c.5-.6.8-1.4.7-2.2-.7 0-1.6.5-2.1 1.1-.5.5-.9 1.4-.8 2.2.8.1 1.7-.4 2.2-1.1z"/></svg>Download .dmg</a>
+          <a class="btn btn-sec" href="https://github.com/Manuekle/shift/releases">All releases</a>
+        </div>
+      </div>
+      <div class="inst-or" data-reveal="2"><span class="lbl-sm t3">Or run it from the repo</span><p class="body-sm">You need Docker Desktop with at least 8 GB of memory and about 10 GB of free disk. The first run takes 10 to 15 minutes, mostly downloads. Later starts take seconds.</p></div>
       <div class="inst" data-reveal="2">
         <ol class="isteps inst-l">
           <li><div><h3>Install Docker</h3><p class="body-sm">Docker Desktop, or Docker Engine with Compose. Give it 8 GB of memory.</p></div></li>
@@ -1105,7 +1121,8 @@ input[type=range]:focus-visible::-moz-range-thumb{outline:2px solid var(--narvik
       <h2 class="display" data-reveal style="max-width:14ch">Bring your own records.</h2>
       <p class="body" data-reveal="2">Open source under MIT. Built on Next.js, React, the Web Audio API, GSAP, Demucs, whisper.cpp, Ollama and ffmpeg.</p>
       <div class="cta" data-reveal="3">
-        <a class="btn btn-pri" href="#install">Install with Docker</a>
+        <a class="btn btn-pri" href="https://github.com/Manuekle/shift/releases/latest/download/Shift-mac-arm64.dmg"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M11.2 8.5c0-1.6 1.3-2.4 1.4-2.4-.8-1.1-2-1.3-2.4-1.3-1-.1-2 .6-2.5.6s-1.3-.6-2.2-.6C4.4 4.8 3.3 5.5 2.7 6.5c-1.2 2.1-.3 5.2.9 6.9.6.8 1.2 1.7 2.1 1.7.8 0 1.2-.5 2.2-.5s1.3.5 2.2.5c.9 0 1.5-.8 2-1.7.6-.9.9-1.8.9-1.9 0 0-1.8-.7-1.8-3zM9.6 3.6c.5-.6.8-1.4.7-2.2-.7 0-1.6.5-2.1 1.1-.5.5-.9 1.4-.8 2.2.8.1 1.7-.4 2.2-1.1z"/></svg>Download for Mac</a>
+        <a class="btn btn-sec" href="#install">Run from the repo</a>
         <a class="btn btn-sec" href="https://github.com/Manuekle/shift">Star on GitHub</a>
       </div>
     </div>
