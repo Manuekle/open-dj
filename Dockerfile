@@ -1,4 +1,4 @@
-# Open DJ with everything it runs server-side: Demucs for stems (CPU PyTorch), ffmpeg, and the disk backup in /data.
+# Shift with everything it runs server-side: Demucs for stems (CPU PyTorch), ffmpeg, and the disk backup in /data.
 #   docker compose up -d --build   then open http://localhost:3000 (compose.yaml also runs Ollama and pulls its model)
 FROM node:22-bookworm-slim AS base
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ffmpeg git ca-certificates \

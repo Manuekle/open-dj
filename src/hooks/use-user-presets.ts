@@ -1,12 +1,13 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import "@/lib/legacy-keys";
 import type { TransitionShape } from "@/lib/types";
 
 /** A transition shape the DJ named and saved from the editor, to apply to any pair like a built-in preset. */
 export type UserPreset = { id: string; name: string; shape: TransitionShape };
 
-const KEY = "open-dj.transition-presets";
+const KEY = "shift.transition-presets";
 const NONE: UserPreset[] = [];
 
 function read(): UserPreset[] {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import "@/lib/legacy-keys";
 import type { DJ } from "@/hooks/use-dj";
 import { loadProjects, removeProject, saveProject } from "@/lib/storage";
 import { makeDeck, type Project, type Session, type StoredMix, type StoredTrack, type Track } from "@/lib/types";
@@ -10,7 +11,7 @@ import { toast } from "@/components/sodium/ui/toast";
    as it changes. IndexedDB takes every change within a second; /api/backup mirrors projects and their tracks to disk
    every few seconds and once more as the tab closes, so a cleared browser or a crash loses at most that much. */
 
-const LAST_KEY = "open-dj-project";
+const LAST_KEY = "shift-project";
 const SAVE_MS = 1000;
 const BACKUP_MS = 4000;
 export type SaveState = "idle" | "saving" | "saved" | "failed";

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import "@/lib/legacy-keys";
 import { loadTracks } from "@/lib/storage";
 import { formatTime, type StoredTrack } from "@/lib/types";
 import { DIFFICULTIES, type Difficulty } from "@/lib/rhythm-game/chart";
@@ -22,7 +23,7 @@ import { ArrowLeft, Icon, Pause, Play, Upload } from "@/components/sodium/icon";
 type Source = { key: string; title: string; artist: string; blob: Blob; bpm: number | null; duration?: number };
 type Phase = "menu" | "play" | "done";
 
-const SETTINGS = "open-dj-rhythm-v1";
+const SETTINGS = "shift-rhythm-v1";
 function readSettings(): { speed: number; offset: number; difficulty: Difficulty } {
   try {
     const v = JSON.parse(localStorage.getItem(SETTINGS) ?? "{}");

@@ -123,7 +123,7 @@ export async function POST(request: Request) {
   const source = request.headers.get("x-source") === "vocals" ? "vocals" : "mix";
 
   const id = crypto.randomUUID();
-  const dir = await mkdtemp(path.join(tmpdir(), "open-dj-lyrics-"));
+  const dir = await mkdtemp(path.join(tmpdir(), "shift-lyrics-"));
   const input = path.join(dir, `track${ext}`);
   await writeFile(input, Buffer.from(body));
   const job: Job = { state: "queued", progress: 0, dir, touched: Date.now() };

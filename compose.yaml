@@ -1,10 +1,10 @@
-# Open DJ, all of it: the app (with Demucs and ffmpeg for stems), Ollama for AI transitions, and the model it needs.
+# Shift, all of it: the app (with Demucs and ffmpeg for stems), Ollama for AI transitions, and the model it needs.
 #   docker compose up -d --build        then open http://localhost:3000
 # Settings come from .env next to this file (see .env.example): PORT, DATA_PATH, OLLAMA_MODEL, OLLAMA_URL.
 services:
   app:
     build: .
-    image: open-dj:latest
+    image: shift:latest
     ports:
       # Only this machine: the app has no accounts, so it is not opened to the network.
       - "127.0.0.1:${PORT:-3000}:3000"

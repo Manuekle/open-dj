@@ -56,7 +56,7 @@ export async function POST(request: Request) {
   if (from === null || (end && to === null)) return Response.json({ error: "Use MM:SS or HH:MM:SS for the start and end." }, { status: 400 });
   if (to !== null && to <= from) return Response.json({ error: "The end must come after the start." }, { status: 400 });
 
-  const dir = await mkdtemp(path.join(tmpdir(), "open-dj-url-"));
+  const dir = await mkdtemp(path.join(tmpdir(), "shift-url-"));
   try {
     // "--" ends the options, so a link can never be read as one. A playlist link downloads only its video. -x keeps
     // the audio stream of a video as it is: no --audio-format, so nothing is transcoded.
