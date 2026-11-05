@@ -3,6 +3,9 @@
 # /api/stems route runs. Needs uv (https://docs.astral.sh/uv/) and ffmpeg on PATH.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# SHIFT_DIR installs elsewhere: the Mac app looks in ~/Library/Application Support/Shift (npm run setup:stems -- --desktop).
+[ "${1:-}" = "--desktop" ] && SHIFT_DIR="$HOME/Library/Application Support/Shift"
+mkdir -p "${SHIFT_DIR:-.}" && cd "${SHIFT_DIR:-.}"
 command -v uv >/dev/null || { echo "Install uv first: brew install uv" >&2; exit 1; }
 command -v ffmpeg >/dev/null || { echo "Install ffmpeg first: brew install ffmpeg" >&2; exit 1; }
 # Demucs pins torchaudio below 2.1, which needs torch 2.0 and Python 3.11.

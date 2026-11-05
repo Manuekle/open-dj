@@ -16,7 +16,7 @@ import { dtwPreset, parseSpeech, parseWhisper, type Lyrics, type Speech } from "
 export const dynamic = "force-dynamic";
 
 const WHISPER = process.env.WHISPER_BIN ?? "whisper-cli";
-const MODELS_DIR = path.join(process.cwd(), ".whisper");
+const MODELS_DIR = process.env.WHISPER_MODELS_DIR ?? path.join(process.cwd(), ".whisper");
 /** Models setup:whisper can fetch, the most accurate first: the best one installed is used, unless WHISPER_MODEL names one. */
 const MODEL_NAMES = ["large-v3", "large-v3-turbo", "medium", "small", "base"];
 /** Silero voice activity detection, run on the vocals stem alongside Whisper: where the singing is, so a word Whisper left

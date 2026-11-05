@@ -1,0 +1,5 @@
+/* Room for the close, minimize and zoom buttons, which sit in the header's first cell. Removed in full screen, where
+   macOS hides them. */
+header.border.bg-panel > :first-child {
+  padding-inline-start: 84px !important;
+}

@@ -11,7 +11,9 @@
     "setup:stems": "bash scripts/setup-demucs.sh",
     "setup:whisper": "bash scripts/setup-whisper.sh",
     "demo:lyrics": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/demo-lyrics.mjs",
-    "test": "vitest run"
+    "test": "vitest run",
+    "desktop:dev": "electron desktop/main.cjs",
+    "desktop:build": "bash scripts/build-desktop.sh"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -36,6 +38,8 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@typescript-eslint/parser": "^8.72.1",
+    "electron": "45.2.3",
+    "electron-builder": "26.18.0",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.0.0",
     "fake-indexeddb": "^6.2.7",
